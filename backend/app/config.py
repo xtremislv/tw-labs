@@ -4,6 +4,7 @@ Every value has a working default for local development, so `uvicorn` and
 `python -m app.worker` start with nothing configured except DATABASE_URL.
 """
 from functools import lru_cache
+from urllib.parse import quote, unquote
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -82,7 +83,7 @@ class Settings(BaseSettings):
     def sqlalchemy_url(self) -> str:
         """Render/Neon/Supabase hand out postgres:// or postgresql:// URLs;
         SQLAlchemy needs the driver named (postgresql+psycopg://)."""
-        url = self.database_url.strip()
+        url = _escape_password(self.database_url.strip())
         for prefix in ("postgres://", "postgresql://"):
             if url.startswith(prefix):
                 return "postgresql+psycopg://" + url[len(prefix):]
@@ -91,6 +92,29 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+
+def _escape_password(url: str) -> str:
+    """Percent-encode a password pasted raw into a database URL.
+
+    Supabase generates passwords that can contain @ # / : ? and similar. Pasted
+    as-is, "postgresql://user:pa@ss@host/db" makes the driver think the host is
+    "ss@host". The host part never contains "@", so everything up to the LAST
+    "@" is user:password; we encode the password unless it's already encoded.
+    """
+    if "://" not in url or url.startswith("sqlite"):
+        return url
+    scheme, rest = url.split("://", 1)
+    at = rest.rfind("@")
+    if at == -1:
+        return url
+    userinfo, hostpart = rest[:at], rest[at + 1 :]
+    user, sep, password = userinfo.partition(":")
+    if not sep or not password:
+        return url
+    if unquote(password) != password:  # already percent-encoded
+        return url
+    return f"{scheme}://{user}:{quote(password, safe='')}@{hostpart}"
 
 
 @lru_cache

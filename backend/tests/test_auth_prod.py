@@ -65,3 +65,18 @@ def test_database_url_normalised():
     assert Settings(database_url="postgres://u:p@h:5432/d").sqlalchemy_url == "postgresql+psycopg://u:p@h:5432/d"
     assert Settings(database_url="postgresql://u:p@h/d?sslmode=require").sqlalchemy_url == "postgresql+psycopg://u:p@h/d?sslmode=require"
     assert Settings(database_url="sqlite:///./dev.db").sqlalchemy_url == "sqlite:///./dev.db"
+
+
+def test_raw_special_characters_in_password_are_escaped():
+    raw = "postgresql://postgres.abc:Pa@ss#word/2310@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+    url = Settings(database_url=raw).sqlalchemy_url
+    assert url == "postgresql+psycopg://postgres.abc:Pa%40ss%23word%2F2310@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+    from sqlalchemy.engine import make_url
+
+    u = make_url(url)
+    assert u.host == "aws-0-ap-south-1.pooler.supabase.com" and u.password == "Pa@ss#word/2310" and u.port == 5432
+    # already-encoded passwords are left alone
+    enc = "postgresql://u:Pa%40ss@h:5432/d"
+    assert make_url(Settings(database_url=enc).sqlalchemy_url).password == "Pa@ss"
+    # plain passwords unchanged
+    assert Settings(database_url="postgresql://u:abc123@h/d").sqlalchemy_url == "postgresql+psycopg://u:abc123@h/d"
