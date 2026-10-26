@@ -1,0 +1,68 @@
+# TW-Labs Web Intel — full self-hosted stack, separate from TW-Labs.
+#
+#   cp .env.example .env                       # set POSTGRES_PASSWORD
+#   cp backend/.env.example backend/.env       # optional tuning
+#   docker compose up -d --build
+#   open http://localhost:8080
+#
+# Four containers: Postgres, the API, the always-on worker (polling every
+# 15 min — the reason this runs on a VPS rather than a host that sleeps),
+# and nginx serving the dashboard + proxying /api.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://webintel:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/webintel
+  CORS_ORIGINS: "http://localhost:8080"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: webintel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: webintel
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webintel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment: *backend-env
+    depends_on:
+      api:
+        condition: service_started  # api runs the migrations first
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  db_data:

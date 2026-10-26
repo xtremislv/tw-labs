@@ -1,0 +1,252 @@
+/* Fonts load from index.html (<link>, not @import) so they fetch in
+   parallel with this stylesheet. Palette and component classes are carried
+   over from the TW-Labs dashboard so both apps look like one product. */
+@import 'tailwindcss';
+/* Don't scan the read-only copy of the old TW-Labs app for class names. */
+@source not "../reference-tw-labs";
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Dark palette is the default; the light palette overrides it under
+   data-theme="light" (App.tsx sets the attribute on <html>). */
+:root {
+  --bg-base: #0f131c;
+  --bg-panel: #181b25;
+  --bg-card: #1c1f29;
+  --bg-elevated: #262a34;
+  --bg-active: #31353f;
+  --accent: #8083ff;
+  --accent-light: #c0c1ff;
+  --accent-dim: rgba(128, 131, 255, 0.15);
+  --on-accent: #0d0096;
+  --text-primary: #dfe2ef;
+  --text-secondary: #c7c4d7;
+  --text-muted: #908fa0;
+  --border: rgba(49, 53, 63, 0.6);
+  --success: #4ade80;
+  --warning: #facc15;
+  --tier-danger: #f87171;
+  --tier-orange: #fb923c;
+  --tier-grey: #94a3b8;
+  --tier-blue: #38bdf8;
+  --hover-overlay: rgba(255, 255, 255, 0.05);
+  --surface-translucent: rgba(15, 19, 28, 0.92);
+  --scrim: rgba(5, 7, 12, 0.6);
+}
+
+:root[data-theme="light"] {
+  --bg-base: #f3f4f9;
+  --bg-panel: #ffffff;
+  --bg-card: #ffffff;
+  --bg-elevated: #edeff5;
+  --bg-active: #e1e4ee;
+  --accent-light: #4c46c9;
+  --accent-dim: rgba(106, 99, 242, 0.12);
+  --text-primary: #171923;
+  --text-secondary: #4a4e5c;
+  --text-muted: #666a7f;
+  --border: rgba(23, 25, 35, 0.12);
+  --success: #15803d;
+  --warning: #a16207;
+  --tier-danger: #dc2626;
+  --tier-orange: #c2410c;
+  --tier-grey: #475569;
+  --tier-blue: #0369a1;
+  --hover-overlay: rgba(23, 25, 35, 0.05);
+  --surface-translucent: rgba(255, 255, 255, 0.92);
+  --scrim: rgba(23, 25, 35, 0.35);
+}
+
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-slide {
+  transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s ease;
+}
+
+.hover-surface:hover {
+  background: var(--hover-overlay);
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.filter-chip:hover, .filter-chip.active {
+  background: var(--accent-dim);
+  color: var(--accent-light);
+  border-color: var(--accent);
+}
+
+/* Cards keep the TW-Labs .video-card name so the two apps share styling. */
+.video-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.video-card:hover, .video-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(128,131,255,0.2), 0 4px 24px rgba(0,0,0,0.3);
+}
+:root[data-theme="light"] .video-card:hover, :root[data-theme="light"] .video-card.selected {
+  box-shadow: 0 0 0 1px rgba(128,131,255,0.25), 0 4px 18px rgba(23,25,35,0.08);
+}
+
+/* Status badges: same "tint + saturated ink" pattern as TW-Labs' badges. */
+.badge-new {
+  background: rgba(74,222,128,0.12);
+  color: var(--success);
+  border: 1px solid rgba(74,222,128,0.3);
+  font-family: "JetBrains Mono", monospace;
+}
+.badge-updated {
+  background: rgba(245,158,11,0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245,158,11,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+.badge-type {
+  background: var(--accent-dim);
+  color: var(--accent-light);
+  border: 1px solid rgba(128,131,255,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+.badge-own {
+  background: rgba(56,189,248,0.14);
+  color: var(--tier-blue);
+  border: 1px solid rgba(56,189,248,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+:root[data-theme="light"] .badge-new {
+  background: rgba(74,222,128,0.15);
+  border: 1px solid rgba(74,222,128,0.4);
+}
+:root[data-theme="light"] .badge-updated {
+  background: rgba(245,158,11,0.15);
+  color: #92400e;
+  border: 1px solid rgba(245,158,11,0.4);
+}
+
+.notification-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff4444;
+  border: 2px solid var(--bg-panel);
+}
+.unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  flex-shrink: 0;
+}
+
+.select-custom {
+  appearance: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 6px 28px 6px 10px;
+  font-size: 13px;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input.select-custom {
+  padding-right: 10px;
+  cursor: text;
+}
+.select-custom:focus, .select-custom:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.select-custom:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+select.select-custom {
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 52%, calc(100% - 9px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+input[type="date"].select-custom::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
+:root[data-theme="light"] input[type="date"].select-custom::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  border-radius: 8px;
+  transition: filter 0.15s, opacity 0.15s;
+}
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.drawer {
+  animation: drawer-in 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-active) 50%, var(--bg-elevated) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer, .skeleton, .sidebar-slide { animation: none; transition: none; }
+}

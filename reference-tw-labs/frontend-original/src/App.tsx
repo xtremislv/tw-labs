@@ -1,0 +1,2700 @@
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import svgPaths from "imports/svg-siexpc9d1x";
+import { useAsync } from "@/hooks/useAsync";
+import {
+  fetchChannels,
+  fetchCohorts,
+  fetchVideos,
+  fetchSystemStatus,
+  fetchScraperSettings,
+  setInstagramScrapingEnabled,
+  createChannel,
+  deleteChannel,
+  updateChannel,
+  triggerManualScrape,
+  fetchLatestTopicSearch,
+  searchTopic,
+  ApiError,
+  type ApiChannel as Channel,
+  type ApiVideo as Video,
+  type CohortSummary,
+  type SystemStatus,
+  type ScraperSettings,
+  type OverperformMetric,
+  type TopicSearchResult,
+  type TopicSearchChannelResult,
+} from "@/lib/api";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+// Channel/Video are now the live API shapes (see src/lib/api.ts) — this file
+// used to define its own Channel/Video interfaces around a hardcoded mock
+// array. The API's CamelModel schemas were written to match those old mock
+// shapes field-for-field, so almost nothing else in this file had to change.
+
+type Platform = "youtube" | "instagram" | "all";
+type ViewMode = "grid" | "list";
+type Theme = "light" | "dark";
+
+// ─── Theme (light/dark) ─────────────────────────────────────────────────────
+// Defaults to the OS/browser color-scheme preference the first time someone
+// opens the dashboard (see detectSystemTheme); the sidebar's toggle (see
+// handleToggleTheme in App()) then remembers an explicit choice in
+// localStorage, which takes over from the system preference from then on in
+// this browser. See src/index.css's ":root[data-theme=\"light\"]" block for
+// the actual light palette.
+
+function detectSystemTheme(): Theme {
+  if (typeof window === "undefined" || !window.matchMedia) return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function getStoredTheme(): Theme | null {
+  try {
+    const v = window.localStorage.getItem("theme");
+    return v === "light" || v === "dark" ? v : null;
+  } catch {
+    return null; // privacy mode / storage disabled — just fall back to system
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtViews(n: number) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(0) + "K";
+  return String(n);
+}
+
+/** Same as fmtViews but tolerates the "not enough history yet" null a brand-new channel's baseline can be. */
+function fmtViewsN(n: number | null | undefined) {
+  return n == null ? "—" : fmtViews(n);
+}
+
+function fmtRatio(n: number | null | undefined) {
+  return n == null ? "—" : n.toFixed(2) + "x";
+}
+
+function fmtDate(d: string) {
+  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function currentMonthLabel() {
+  return new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+/** "3m ago" / "2h ago" — used to show when data was last refreshed. */
+function fmtRelativeTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const mins = Math.round((Date.now() - then) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+
+function YTIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M23.5 6.2s-.3-1.9-1.1-2.8c-1.1-1.2-2.3-1.2-2.8-1.2C16.7 2 12 2 12 2s-4.7 0-7.6.2c-.6.1-1.7.1-2.8 1.2C.8 4.3.5 6.2.5 6.2S.2 8.4.2 10.6v2.1c0 2.2.3 4.4.3 4.4s.3 1.9 1.1 2.8c1.1 1.2 2.5 1.1 3.1 1.2C6.7 21.3 12 21.3 12 21.3s4.7 0 7.6-.3c.6-.1 1.7-.1 2.8-1.2.8-.8 1.1-2.8 1.1-2.8s.3-2.2.3-4.4v-2.1c0-2.2-.3-4.4-.3-4.4zM9.7 15.5V8.3l7.6 3.6-7.6 3.6z" />
+    </svg>
+  );
+}
+
+function IGIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z" />
+    </svg>
+  );
+}
+
+function BellIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  );
+}
+
+function ChevronDown({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" />
+      <line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" />
+      <line x1="3" y1="18" x2="3.01" y2="18" />
+    </svg>
+  );
+}
+
+function BarChartIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" />
+      <line x1="6" y1="20" x2="6" y2="14" /><line x1="2" y1="20" x2="22" y2="20" />
+    </svg>
+  );
+}
+
+// Sponsored/campaign filter chip + VideoCard badge — flags a video
+// SponsorBlock (see backend/app/sponsorblock.py) detected a sponsor/
+// self-promo/exclusive-access segment in.
+function MegaphoneIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 11v3a1 1 0 0 0 1 1h2l3.5 5V6L6 10H4a1 1 0 0 0-1 1z" />
+      <path d="M13 8a4 4 0 0 1 0 8" /><path d="M16.5 5a8 8 0 0 1 0 14" />
+    </svg>
+  );
+}
+
+function XIcon({ size = 10 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
+function HomeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 11.5 12 4l8 7.5" />
+      <path d="M6 10v9h12v-9" />
+      <path d="M10 19v-5h4v5" />
+    </svg>
+  );
+}
+
+// Sidebar theme toggle.
+function SunIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4.5" />
+      <line x1="12" y1="1.5" x2="12" y2="4" /><line x1="12" y1="20" x2="12" y2="22.5" />
+      <line x1="4.2" y1="4.2" x2="5.9" y2="5.9" /><line x1="18.1" y1="18.1" x2="19.8" y2="19.8" />
+      <line x1="1.5" y1="12" x2="4" y2="12" /><line x1="20" y1="12" x2="22.5" y2="12" />
+      <line x1="4.2" y1="19.8" x2="5.9" y2="18.1" /><line x1="18.1" y1="5.9" x2="19.8" y2="4.2" />
+    </svg>
+  );
+}
+function MoonIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.5 14.2A8.5 8.5 0 1 1 9.8 3.5a7 7 0 0 0 10.7 10.7z" />
+    </svg>
+  );
+}
+
+function TrendUpIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+      <polyline points="17 6 23 6 23 12" />
+    </svg>
+  );
+}
+
+function TrashIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function PlusIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function ClockIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15.5 14" />
+    </svg>
+  );
+}
+
+
+function RefreshIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
+}
+
+function HeartIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z" />
+    </svg>
+  );
+}
+
+function CommentIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function FilmIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="18" rx="2" />
+      <line x1="7" y1="3" x2="7" y2="21" /><line x1="17" y1="3" x2="17" y2="21" />
+      <line x1="2" y1="9" x2="7" y2="9" /><line x1="2" y1="15" x2="7" y2="15" />
+      <line x1="17" y1="9" x2="22" y2="9" /><line x1="17" y1="15" x2="22" y2="15" />
+    </svg>
+  );
+}
+
+// ─── Mini Sparkline ───────────────────────────────────────────────────────────
+
+function Sparkline({ ratio, color }: { ratio: number; color: string }) {
+  const pts = useMemo(() => {
+    const seed = ratio * 100;
+    const vals = [40, 55, 45, 70, 60, seed * 0.9, seed];
+    const max = Math.max(...vals);
+    return vals.map((v, i) => `${(i / (vals.length - 1)) * 60},${20 - (v / max) * 18}`).join(" ");
+  }, [ratio]);
+  return (
+    <svg width="60" height="20" viewBox="0 0 60 20">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// ─── Mini Donut Chart ─────────────────────────────────────────────────────────
+
+function DonutChart({ ytCount, igCount }: { ytCount: number; igCount: number }) {
+  const total = ytCount + igCount;
+  const ytPct = total ? (ytCount / total) * 100 : 50;
+  const r = 28, cx = 32, cy = 32, circ = 2 * Math.PI * r;
+  const ytDash = (ytPct / 100) * circ;
+  return (
+    <svg width="64" height="64" viewBox="0 0 64 64">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(225,48,108,0.25)" strokeWidth="8" />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,68,68,0.7)" strokeWidth="8"
+        strokeDasharray={`${ytDash} ${circ - ytDash}`} strokeDashoffset={circ / 4} strokeLinecap="round" />
+      <text x={cx} y={cy + 4} textAnchor="middle" fill="var(--text-primary)" fontSize="10" fontFamily="JetBrains Mono,monospace" fontWeight="500">
+        {Math.round(ytPct)}%
+      </text>
+    </svg>
+  );
+}
+
+// ─── Mini Bar Chart ───────────────────────────────────────────────────────────
+
+function BarChart({ videos, metric }: { videos: Video[]; metric: OverperformMetric }) {
+  // A brand-new channel's freshest videos have no baseline yet (see
+  // backend/app/overperformance.py) — the chosen metric's ratio is null
+  // until enough history exists. Those can't be ranked here, so they're
+  // left out rather than crashing the max()/sort() below on a null.
+  const ratioOf = (v: Video) => (metric === "median" ? v.overperformRatioMedian : v.overperformRatio);
+  const ranked = videos.filter((v): v is Video & { overperformRatio: number; overperformRatioMedian: number } => ratioOf(v) != null);
+  const top5 = [...ranked].sort((a, b) => ratioOf(b)! - ratioOf(a)!).slice(0, 6);
+  if (top5.length === 0) {
+    return <div className="text-xs py-2" style={{ color: "var(--text-muted)" }}>Not enough scrape history yet to rank channels.</div>;
+  }
+  const max = Math.max(...top5.map(v => ratioOf(v)!));
+  return (
+    <div className="flex flex-col gap-1.5 w-full">
+      {top5.map(v => (
+        <div key={v.id} className="flex items-center gap-2">
+          <span className="text-[10px] font-mono truncate w-28 shrink-0" style={{ color: "var(--text-muted)" }}>{v.channelName}</span>
+          <div className="flex-1 h-1.5 rounded-full" style={{ background: "var(--bg-active)" }}>
+            <div className="h-full rounded-full transition-all" style={{
+              width: `${(ratioOf(v)! / max) * 100}%`,
+              background: v.platform === "youtube" ? "var(--yt-red)" : "var(--ig-pink)"
+            }} />
+          </div>
+          <span className="text-[10px] font-mono w-8 text-right shrink-0" style={{ color: "var(--accent-light)" }}>{ratioOf(v)!.toFixed(1)}x</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Toggle Switch ────────────────────────────────────────────────────────────
+// Small hand-rolled on/off switch (no library) — used by the sidebar's
+// "Apify Usage" toggle. A native checkbox styled as a switch would work too,
+// but a button gives clearer control over the disabled/pending look.
+
+function ToggleSwitch({ checked, onChange, disabled, label }: { checked: boolean; onChange: () => void; disabled?: boolean; label?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onChange}
+      disabled={disabled}
+      className="relative shrink-0 transition-colors disabled:opacity-50 disabled:cursor-wait"
+      style={{ width: 38, height: 20, borderRadius: 999, background: checked ? "var(--accent)" : "var(--bg-active)", border: "1px solid var(--border)" }}
+    >
+      <span
+        className="absolute rounded-full transition-transform"
+        style={{ width: 14, height: 14, top: 3, left: 3, background: checked ? "var(--on-accent)" : "var(--text-muted)", transform: checked ? "translateX(18px)" : "translateX(0)" }}
+      />
+    </button>
+  );
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+const COHORT_COLORS = ["#c0c1ff", "#ffb3ad", "#ffb0cd", "#8fe3c7", "#ffd88f", "#a8c8ff"];
+
+interface SidebarProps {
+  open: boolean;
+  activeSection: string;
+  setActiveSection: (s: string) => void;
+  overperformBadge: number | null;
+  cohorts: CohortSummary[];
+  // Distinguishes "GET /api/channels/cohorts failed" from "no cohorts exist
+  // yet" — both used to render as the same empty list with no way to tell
+  // which one you were looking at, or any way to retry short of reloading
+  // the page.
+  cohortsError: string | null;
+  onRetryCohorts: () => void;
+  quotaPct: number | null;
+  // Same distinction for the API Quota widget: a failed GET /api/system/
+  // status used to render identically to "no quota data yet" ("—").
+  quotaError: string | null;
+  onRetryQuota: () => void;
+  instagramScrapingEnabled: boolean | null;
+  onToggleInstagramScraping: () => void;
+  togglingScraper: boolean;
+  theme: Theme;
+  onToggleTheme: () => void;
+}
+
+function Sidebar({
+  open,
+  activeSection,
+  setActiveSection,
+  overperformBadge,
+  cohorts,
+  cohortsError,
+  onRetryCohorts,
+  quotaPct,
+  quotaError,
+  onRetryQuota,
+  instagramScrapingEnabled,
+  onToggleInstagramScraping,
+  togglingScraper,
+  theme,
+  onToggleTheme,
+}: SidebarProps) {
+  const navLinks = [
+    { label: "Overperformance", icon: "chart", badge: overperformBadge },
+    { label: "Trend Analysis", icon: "trend", badge: null as number | null },
+    { label: "Add Channel", icon: "people", badge: null as number | null },
+  ];
+
+  return (
+    <aside
+      className="sidebar-slide flex flex-col h-full shrink-0 overflow-hidden"
+      style={{
+        width: open ? 240 : 0,
+        opacity: open ? 1 : 0,
+        background: "var(--bg-panel)",
+        borderRight: "1px solid var(--border)",
+        pointerEvents: open ? "auto" : "none",
+      }}
+    >
+      {/* Brand */}
+      <div className="flex items-center justify-between px-4 py-4 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="flex items-center gap-2.5">
+          <div className="relative flex items-center justify-center size-8 shrink-0">
+            {/* TW-Labs mark — public/tw-logo.png, already a circular black
+                mark with transparent corners, so no background/clip needed
+                here (unlike the old inline SVG glyph it replaces). */}
+            <img src="/tw-logo.png" alt="TW-Labs" className="size-8" />
+            <span className="notification-dot" style={{ position: "absolute", top: 3, right: 3, width: 7, height: 7, background: "var(--accent-light)", borderRadius: "50%", border: "1.5px solid var(--bg-panel)" }} />
+          </div>
+          <div>
+            <div className="text-sm font-bold leading-none" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>
+              TW<span style={{ color: "var(--accent-light)" }}>-Labs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <div className="px-2 shrink-0">
+        <div className="text-[10px] tracking-widest uppercase px-3 py-2" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>
+          Telemetry & Analysis
+        </div>
+        <nav className="flex flex-col gap-0.5">
+          {navLinks.map(link => (
+            <button
+              key={link.label}
+              onClick={() => setActiveSection(link.label)}
+              className="flex items-center gap-3 px-3 py-2 rounded-lg w-full text-left transition-all"
+              style={{
+                background: activeSection === link.label ? "var(--accent)" : "transparent",
+                color: activeSection === link.label ? "var(--on-accent)" : "var(--text-secondary)",
+              }}
+            >
+              <NavIcon icon={link.icon} active={activeSection === link.label} />
+              <span className="text-sm flex-1" style={{ fontFamily: "Lora, serif" }}>{link.label}</span>
+              {link.badge != null && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold" style={{
+                  background: activeSection === link.label ? "rgba(164,2,23,0.9)" : "#a40217",
+                  color: "#ffaea8",
+                }}>
+                  {link.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {/* Cohorts */}
+      <div className="px-2 mt-2 flex-1 min-h-0 overflow-y-auto">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>Saved Cohorts</span>
+          <svg width="8" height="8" viewBox="0 0 8.16667 8.16667" fill="none"><path d={svgPaths.p10ad69c0} fill="var(--accent-light)" /></svg>
+        </div>
+        {cohortsError ? (
+          <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            <div style={{ color: "var(--tier-danger)" }}>Couldn't load cohorts.</div>
+            <button onClick={onRetryCohorts} className="underline mt-0.5" style={{ color: "var(--accent-light)" }}>
+              Retry
+            </button>
+          </div>
+        ) : cohorts.length === 0 ? (
+          <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            Tag channels with a cohort in Add Channel to group them here.
+          </div>
+        ) : (
+          cohorts.map((c, i) => (
+            <button key={c.label} className="flex items-center gap-3 px-3 py-2 rounded-lg w-full text-left hover-surface transition-colors">
+              <div className="size-2 rounded-sm shrink-0" style={{ background: COHORT_COLORS[i % COHORT_COLORS.length] }} />
+              <span className="text-sm flex-1 text-left" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>{c.label}</span>
+              <span className="text-sm" style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}>{c.count}</span>
+            </button>
+          ))
+        )}
+      </div>
+
+      {/* Appearance — light/dark theme toggle. Defaults to the OS/browser
+          color-scheme preference on first load; this switch's own choice
+          is then remembered (localStorage) and takes over from the system
+          for this browser — see getStoredTheme/detectSystemTheme + the
+          theme effects in App(). */}
+      <div className="px-2 pt-2 shrink-0">
+        <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: "var(--bg-card)" }}>
+          <span className="flex items-center gap-2 text-[10px] tracking-widest uppercase" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>
+            {theme === "light" ? <SunIcon /> : <MoonIcon />}
+            {theme === "light" ? "Light Mode" : "Dark Mode"}
+          </span>
+          <ToggleSwitch checked={theme === "light"} onChange={onToggleTheme} label="Toggle light/dark theme" />
+        </div>
+      </div>
+
+      {/* Apify Usage — pauses Instagram (Apify) scraping to save Apify
+          credit. Enforced server-side in app/scrape_service.py so it holds
+          for the GitHub Actions schedule too, not just this dashboard's own
+          "Refresh data" button — see WorkspaceSettings in
+          backend/app/models.py. */}
+      <div className="px-2 pt-2 shrink-0">
+        <div className="rounded-xl p-3" style={{ background: "var(--bg-card)" }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] tracking-widest uppercase" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>Apify Usage</span>
+            <ToggleSwitch
+              checked={instagramScrapingEnabled ?? true}
+              onChange={onToggleInstagramScraping}
+              disabled={togglingScraper || instagramScrapingEnabled == null}
+              label="Toggle Instagram (Apify) scraping"
+            />
+          </div>
+          <div className="text-[11px] leading-snug" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>
+            {instagramScrapingEnabled === false
+              ? "Instagram scraping paused — refresh & schedule skip Apify."
+              : "Instagram scraping runs on refresh & the daily schedule."}
+          </div>
+        </div>
+      </div>
+
+      {/* API Quota */}
+      <div className="p-2 shrink-0">
+        <div className="rounded-xl p-3" style={{ background: "var(--bg-card)" }}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-[10px] tracking-widest uppercase" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>API Quota</h2>
+            <span className="text-xs font-bold" style={{ color: "var(--text-primary)", fontFamily: "JetBrains Mono, monospace" }}>
+              {quotaPct == null ? "—" : `${quotaPct}%`}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--bg-active)" }}>
+            <div className="h-full rounded-full" style={{ width: `${quotaPct ?? 0}%`, background: "var(--accent-light)" }} />
+          </div>
+          {quotaError ? (
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-[11px]" style={{ color: "var(--tier-danger)" }}>Couldn't load quota.</span>
+              <button onClick={onRetryQuota} className="text-[11px] underline" style={{ color: "var(--accent-light)" }}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-[11px]" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>YouTube Data API, today</span>
+              <svg width="11" height="9" viewBox="0 0 11.6676 9.33333" fill="none"><path d={svgPaths.p1cccc530} fill="var(--text-muted)" /></svg>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* SponsorBlock attribution — required by their license for use of
+          the community-contributed segment database (see the module
+          docstring in backend/app/sponsorblock.py). Keep this visible
+          wherever the "Sponsored" badge/filter it powers is used. */}
+      <div className="px-3 pb-3 shrink-0">
+        <a href="https://sponsor.ajay.app" target="_blank" rel="noreferrer"
+          className="text-[10px] hover:underline" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>
+          Sponsor data via SponsorBlock
+        </a>
+      </div>
+    </aside>
+  );
+}
+
+function NavIcon({ icon, active }: { icon: string; active: boolean }) {
+  const color = active ? "var(--on-accent)" : "var(--text-secondary)";
+  const icons: Record<string, React.ReactElement> = {
+    chart: <svg width="16" height="13" viewBox="0 0 16.6681 13.3333" fill="none"><path d={svgPaths.p350ec980} fill={color} /></svg>,
+    people: <svg width="20" height="10" viewBox="0 0 20 10" fill="none"><path d={svgPaths.p279daa80} fill={color} /></svg>,
+    trend: <svg width="16" height="11" viewBox="0 0 16.6667 10.8333" fill="none"><path d={svgPaths.p617b400} fill={color} /></svg>,
+    grid: <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d={svgPaths.p1d75e100} fill={color} /></svg>,
+    compare: <svg width="16" height="13" viewBox="0 0 16.6667 13.3333" fill="none"><path d={svgPaths.p110e1200} fill={color} /></svg>,
+    bell: <svg width="16" height="16" viewBox="0 0 16.6667 16.7083" fill="none"><path d={svgPaths.p1dcf6b00} fill={color} /></svg>,
+  };
+  return icons[icon] || <div className="size-4" />;
+}
+
+// ─── Notification Panel ───────────────────────────────────────────────────────
+
+function NotificationPanel({ videos, loading, error, onClose, onRetry }: { videos: Video[]; loading: boolean; error?: string | null; onClose: () => void; onRetry: () => void }) {
+  const topVideos = videos.slice(0, 5);
+  const ytCount = videos.filter(v => v.platform === "youtube").length;
+  const igCount = videos.filter(v => v.platform === "instagram").length;
+  const totalViews = videos.reduce((s, v) => s + v.views, 0);
+  // These videos were selected by their median ratio (see openNotifications
+  // in App()), so the stats shown here need to read the same field or the
+  // panel's own numbers won't add up against why a video is even listed.
+  const avgRatio = videos.length ? (videos.reduce((s, v) => s + (v.overperformRatioMedian ?? 0), 0) / videos.length) : 0;
+
+  return (
+    <div className="absolute right-0 top-12 z-50 w-80 rounded-xl overflow-hidden shadow-2xl"
+      style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>Performance Overview</h2>
+        <button onClick={onClose} aria-label="Close" className="p-1 -m-1 opacity-50 hover:opacity-100 transition-opacity" style={{ color: "var(--text-secondary)" }}>
+          <XIcon size={12} />
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="px-4 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>Loading…</div>
+      ) : error ? (
+        <div className="px-4 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
+          <div className="mb-1" style={{ color: "var(--tier-danger)" }}>Couldn't load this.</div>
+          <div>{error}</div>
+          <button onClick={onRetry} className="mt-2 underline text-xs" style={{ color: "var(--accent-light)" }}>
+            Retry
+          </button>
+        </div>
+      ) : videos.length === 0 ? (
+        <div className="px-4 py-6 text-xs text-center" style={{ color: "var(--text-muted)" }}>
+          No videos are overperforming yet. Add channels and run a scrape to start tracking.
+        </div>
+      ) : (
+        <>
+          {/* Stats */}
+          <div className="grid grid-cols-2 gap-px" style={{ background: "var(--border)" }}>
+            {[
+              { label: "Overperforming", value: String(videos.length), sub: "videos" },
+              { label: "Avg Ratio", value: avgRatio.toFixed(2) + "x", sub: "above baseline" },
+              { label: "Total Views", value: fmtViews(totalViews), sub: "combined" },
+              { label: "Platforms", value: `YT ${ytCount} · IG ${igCount}`, sub: "channels active" },
+            ].map(s => (
+              <div key={s.label} className="px-4 py-3" style={{ background: "var(--bg-card)" }}>
+                <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>{s.label}</div>
+                <div className="text-base font-bold" style={{ color: "var(--text-primary)", fontFamily: "JetBrains Mono, monospace" }}>{s.value}</div>
+                <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Platform split */}
+          <div className="px-4 py-3" style={{ borderTop: "1px solid var(--border)" }}>
+            <div className="flex items-center gap-3">
+              <DonutChart ytCount={ytCount} igCount={igCount} />
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="size-2 rounded-sm" style={{ background: "var(--yt-red)" }} />
+                  <span className="text-xs" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>YouTube — {ytCount}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="size-2 rounded-sm" style={{ background: "var(--ig-pink)" }} />
+                  <span className="text-xs" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>Instagram — {igCount}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Top alerts */}
+          <div className="px-4 pb-3" style={{ borderTop: "1px solid var(--border)" }}>
+            <div className="text-[10px] uppercase tracking-widest py-2" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>Top Performers</div>
+            <div className="flex flex-col gap-2">
+              {topVideos.map(v => (
+                <div key={v.id} className="flex items-center gap-2">
+                  <span className="text-[10px] w-7 shrink-0 font-mono font-bold" style={{ color: velocityRatioColor(v.overperformRatioMedian) }}>{fmtRatio(v.overperformRatioMedian)}</span>
+                  <span className="text-xs truncate flex-1" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>{v.title}</span>
+                  <span className={`text-[10px] px-1.5 rounded-sm ${v.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>
+                    {v.platform === "youtube" ? "YT" : "IG"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Filter Bar ───────────────────────────────────────────────────────────────
+
+type DatePreset = "all" | "3d" | "7d" | "2w" | "1m" | "2m" | "custom";
+
+const DATE_PRESETS: { value: DatePreset; label: string; days: number | null }[] = [
+  { value: "all", label: "All time", days: null },
+  { value: "3d", label: "Last 3 days", days: 3 },
+  { value: "7d", label: "Last 7 days", days: 7 },
+  { value: "2w", label: "Last 2 weeks", days: 14 },
+  { value: "1m", label: "Last 1 month", days: 30 },
+  { value: "2m", label: "Last 2 months", days: 60 },
+  { value: "custom", label: "Custom range", days: null },
+];
+
+// "YYYY-MM-DD" in the viewer's local timezone — matches what <input type="date">
+// produces/consumes, so a preset and manual custom-range entry are interchangeable.
+function isoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function presetToRange(preset: DatePreset): { dateFrom: string; dateTo: string } {
+  const found = DATE_PRESETS.find(p => p.value === preset);
+  if (!found?.days) return { dateFrom: "", dateTo: "" };
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - found.days);
+  return { dateFrom: isoDate(from), dateTo: isoDate(to) };
+}
+
+interface Filters {
+  platform: Platform;
+  channels: string[];
+  datePreset: DatePreset;
+  dateFrom: string;
+  dateTo: string;
+  viewsThreshold: string;
+  sortBy: string;
+  metric: OverperformMetric;
+  showChart: boolean;
+  format: string;
+  sponsoredOnly: boolean;
+}
+
+// The "nothing filtered" starting point — used for the initial state and by
+// the Home button (see setActiveSection/setFilters in App()) so "go home"
+// reliably means the exact same thing both times, not just "whatever the
+// useState literal happened to say". Date range defaults to the last 3
+// days, computed fresh via presetToRange every time this is called (same as
+// picking "Last 3 days" from the dropdown by hand) rather than "All time",
+// so the dashboard opens onto what's recent instead of the entire history.
+// A function rather than a frozen module-level constant: this dashboard is
+// the kind of tab people leave open for a long time, and a value computed
+// once when the module first loaded would make the Home button's "last 3
+// days" silently drift from the actual last 3 days the longer the tab
+// stays open.
+function getDefaultFilters(): Filters {
+  return {
+    platform: "all",
+    channels: [],
+    datePreset: "3d",
+    ...presetToRange("3d"),
+    viewsThreshold: "",
+    sortBy: "ratio",
+    metric: "median",
+    showChart: false,
+    format: "all",
+    sponsoredOnly: false,
+  };
+}
+
+// Which format values make sense for a given platform, and their label —
+// YouTube channels are only ever "long" or "short" (see
+// classify_youtube_format in backend/app/scrapers/duration.py) and Instagram
+// content is always scraped as "reel" (backend/app/scrapers/instagram.py),
+// so showing all four options regardless of platform just offers filters
+// that can never match anything for that platform.
+const FORMAT_OPTIONS_BY_PLATFORM: Record<Platform, { value: string; label: string }[]> = {
+  all: [
+    { value: "all", label: "All Formats" },
+    { value: "long", label: "Long-form" },
+    { value: "short", label: "Shorts / Reels" },
+    { value: "reel", label: "Reels only" },
+  ],
+  youtube: [
+    { value: "all", label: "All Formats" },
+    { value: "long", label: "Long-form" },
+    { value: "short", label: "Shorts" },
+  ],
+  instagram: [
+    { value: "all", label: "All Formats" },
+    { value: "reel", label: "Reels only" },
+  ],
+};
+
+// Keeps the format filter valid whenever the platform changes — e.g.
+// switching to Instagram while "Long-form" or "Shorts" is selected snaps to
+// "Reels only" (the one format Instagram content ever has) instead of
+// silently keeping a filter that can no longer match anything; switching
+// away from Instagram while "Reels only" is selected resets to "All
+// Formats" for the same reason, in reverse.
+function nextFormatForPlatform(format: string, platform: Platform): string {
+  const valid = FORMAT_OPTIONS_BY_PLATFORM[platform].some(o => o.value === format);
+  if (valid) return format;
+  return platform === "instagram" ? "reel" : "all";
+}
+
+function FilterBar({ filters, setFilters, viewMode, setViewMode, shownCount, totalResults, channels }: {
+  filters: Filters;
+  setFilters: (f: Filters) => void;
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
+  shownCount: number;
+  totalResults: number;
+  channels: Channel[];
+}) {
+  const [channelOpen, setChannelOpen] = useState(false);
+  const dropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (dropRef.current && !dropRef.current.contains(e.target as Node)) setChannelOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const platformChannels = channels.filter(c => filters.platform === "all" || c.platform === filters.platform);
+
+  function toggleChannel(id: string) {
+    const next = filters.channels.includes(id)
+      ? filters.channels.filter(c => c !== id)
+      : [...filters.channels, id];
+    setFilters({ ...filters, channels: next });
+  }
+
+  function clearChannels() { setFilters({ ...filters, channels: [] }); }
+
+  const set = (k: keyof Filters) => (val: string | boolean) => setFilters({ ...filters, [k]: val });
+
+  return (
+    <div className="sticky top-0 z-30 px-5 py-3 flex flex-wrap items-center gap-2" style={{ background: "var(--surface-translucent)", backdropFilter: "blur(12px)", borderBottom: "1px solid var(--border)" }}>
+
+      {/* Platform toggle */}
+      <div className="flex rounded-lg overflow-hidden shrink-0" style={{ border: "1px solid var(--border)" }}>
+        {(["all", "youtube", "instagram"] as Platform[]).map(p => (
+          <button key={p} onClick={() => setFilters({ ...filters, platform: p, channels: [], format: nextFormatForPlatform(filters.format, p) })}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs transition-all"
+            style={{
+              background: filters.platform === p ? "var(--accent)" : "var(--bg-elevated)",
+              color: filters.platform === p ? "var(--on-accent)" : "var(--text-muted)",
+              fontFamily: "Inter, sans-serif",
+              fontWeight: 500,
+            }}>
+            {p === "youtube" && <YTIcon size={12} />}
+            {p === "instagram" && <IGIcon size={12} />}
+            {p === "all" ? "All" : p === "youtube" ? "YouTube" : "Instagram"}
+          </button>
+        ))}
+      </div>
+
+      {/* Channel multi-select */}
+      <div className="relative shrink-0" ref={dropRef}>
+        <button onClick={() => setChannelOpen(o => !o)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all"
+          style={{ background: "var(--bg-elevated)", color: filters.channels.length ? "var(--accent-light)" : "var(--text-muted)", border: `1px solid ${filters.channels.length ? "var(--accent)" : "var(--border)"}`, fontFamily: "Inter, sans-serif" }}>
+          {filters.channels.length ? `${filters.channels.length} channels` : "All Channels"}
+          <ChevronDown />
+        </button>
+        {channelOpen && (
+          <div className="absolute left-0 top-10 z-50 w-56 rounded-xl py-1.5 shadow-2xl overflow-hidden"
+            style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+            <div className="flex items-center justify-between px-3 py-1.5" style={{ borderBottom: "1px solid var(--border)" }}>
+              <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>Select channels</span>
+              {filters.channels.length > 0 && (
+                <button onClick={clearChannels} className="text-[10px] hover:underline" style={{ color: "var(--accent-light)" }}>Clear</button>
+              )}
+            </div>
+            {platformChannels.length === 0 ? (
+              <div className="px-3 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
+                No channels tracked yet — add some in Add Channel.
+              </div>
+            ) : (
+              platformChannels.map(c => (
+                <label key={c.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover-surface transition-colors">
+                  <input type="checkbox" checked={filters.channels.includes(c.id)} onChange={() => toggleChannel(c.id)}
+                    className="accent-purple-400 cursor-pointer" />
+                  <span className="text-xs flex-1" style={{ color: "var(--text-secondary)", fontFamily: "Lora, serif" }}>{c.name}</span>
+                  <span className={`text-[10px] px-1.5 rounded ${c.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>
+                    {c.platform === "youtube" ? "YT" : "IG"}
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Date range — a preset dropdown; picking "Custom range" reveals the
+          two date pickers below it for a manual from/to. */}
+      <div className="flex items-center gap-1 shrink-0">
+        <select
+          value={filters.datePreset}
+          onChange={e => {
+            const preset = e.target.value as DatePreset;
+            if (preset === "custom") {
+              setFilters({ ...filters, datePreset: preset });
+            } else {
+              setFilters({ ...filters, datePreset: preset, ...presetToRange(preset) });
+            }
+          }}
+          className="select-custom text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+          {DATE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+        </select>
+        {filters.datePreset === "custom" && (
+          <>
+            <input type="date" value={filters.dateFrom} onChange={e => set("dateFrom")(e.target.value)}
+              className="select-custom text-xs" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+            <span style={{ color: "var(--text-muted)" }} className="text-xs">→</span>
+            <input type="date" value={filters.dateTo} onChange={e => set("dateTo")(e.target.value)}
+              className="select-custom text-xs" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+          </>
+        )}
+      </div>
+
+      {/* Views threshold — the "optional benchmark": set it and the grid
+          below only shows videos that crossed it. */}
+      <div className="relative shrink-0">
+        <input type="number" placeholder="Min views (optional)" aria-label="Minimum views" value={filters.viewsThreshold}
+          onChange={e => set("viewsThreshold")(e.target.value)}
+          className="select-custom text-xs w-40 pr-3" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+      </div>
+
+      {/* Format filter — options narrow to what the current platform can
+          actually have (see FORMAT_OPTIONS_BY_PLATFORM above). */}
+      <select value={filters.format} onChange={e => set("format")(e.target.value)}
+        className="select-custom text-xs shrink-0" style={{ fontFamily: "Inter, sans-serif" }}>
+        {FORMAT_OPTIONS_BY_PLATFORM[filters.platform].map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+
+      {/* Baseline metric — which trailing stat (mean vs. median) the
+          overperform ratio badges/sort are computed against. Both are
+          always in the API response (see backend/app/overperformance.py),
+          so flipping this is instant, no re-fetch needed. */}
+      <div className="flex rounded-lg overflow-hidden shrink-0" style={{ border: "1px solid var(--border)" }} title="Which baseline the overperform ratio is calculated from">
+        {(["average", "median"] as OverperformMetric[]).map(m => (
+          <button key={m} onClick={() => setFilters({ ...filters, metric: m })}
+            className="px-3 py-1.5 text-xs transition-all"
+            style={{
+              background: filters.metric === m ? "var(--accent)" : "var(--bg-elevated)",
+              color: filters.metric === m ? "var(--on-accent)" : "var(--text-muted)",
+              fontFamily: "Inter, sans-serif",
+              fontWeight: 500,
+            }}>
+            {m === "average" ? "Avg" : "Median"}
+          </button>
+        ))}
+      </div>
+
+      {/* Sort */}
+      <select value={filters.sortBy} onChange={e => set("sortBy")(e.target.value)}
+        className="select-custom text-xs shrink-0" style={{ fontFamily: "Inter, sans-serif" }}>
+        <option value="ratio">Sort: Overperform ratio</option>
+        <option value="views">Sort: Total views</option>
+        <option value="date">Sort: Publish date</option>
+        <option value="engagement">Sort: Engagement</option>
+      </select>
+
+      {/* Chart toggle chip */}
+      <button onClick={() => set("showChart")(!filters.showChart)}
+        className={`filter-chip shrink-0 ${filters.showChart ? "active" : ""}`}>
+        <BarChartIcon />
+        Chart
+      </button>
+
+      {/* Sponsored/campaign filter — SponsorBlock-detected (YouTube only,
+          see backend/app/sponsorblock.py). Only shows videos with a
+          confirmed sponsor segment, not merely "not yet checked". */}
+      <button onClick={() => set("sponsoredOnly")(!filters.sponsoredOnly)}
+        className={`filter-chip shrink-0 ${filters.sponsoredOnly ? "active" : ""}`}
+        title="Show only videos SponsorBlock flagged as sponsored/campaign content">
+        <MegaphoneIcon />
+        Sponsored
+      </button>
+
+      {/* Spacer */}
+      <div className="flex-1 min-w-0" />
+
+      {/* Result count — the API caps a single page at PAGE_SIZE (see the
+          "Load more" button below the grid), so this must show how many of
+          the true total match are actually on screen, not just shownCount
+          alone — otherwise a 500-video cap silently masquerades as "the
+          total", which is exactly the bug this replaced. */}
+      <span className="text-xs shrink-0" style={{ color: "var(--text-muted)", fontFamily: "JetBrains Mono, monospace" }}>
+        {shownCount < totalResults ? `${shownCount} of ${totalResults} videos` : `${totalResults} videos`}
+      </span>
+
+      {/* View mode */}
+      <div className="flex rounded-lg overflow-hidden shrink-0" style={{ border: "1px solid var(--border)" }}>
+        <button onClick={() => setViewMode("grid")} aria-label="Grid view" aria-pressed={viewMode === "grid"} className="p-2 transition-colors"
+          style={{ background: viewMode === "grid" ? "var(--bg-active)" : "var(--bg-elevated)", color: viewMode === "grid" ? "var(--accent-light)" : "var(--text-muted)" }}>
+          <GridIcon />
+        </button>
+        <button onClick={() => setViewMode("list")} aria-label="List view" aria-pressed={viewMode === "list"} className="p-2 transition-colors"
+          style={{ background: viewMode === "list" ? "var(--bg-active)" : "var(--bg-elevated)", color: viewMode === "list" ? "var(--accent-light)" : "var(--text-muted)" }}>
+          <ListIcon />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Video Card ───────────────────────────────────────────────────────────────
+
+// The grid-mode ratio badge sits on top of a video thumbnail behind an
+// intentionally near-opaque near-black scrim (see the "Opaque (not
+// translucent) background" comment below) so it stays legible over any
+// thumbnail image regardless of the site's own light/dark theme — so its
+// text needs fixed, always-bright colors rather than the theme-adaptive
+// ones everything else on the card uses.
+// Five tiers: <0.5x red, 0.5-1x grey, 1-2x green, 2-3x blue, 3x+ gold — same
+// hex values as the --tier-grey/--tier-blue/--success/--warning/--tier-danger
+// dark-mode custom properties in index.css (this overlay is fixed-dark
+// regardless of theme, so it can't reference the theme-adaptive variables
+// directly). "#a8adc0" (no-baseline grey) is deliberately a different shade
+// from the 0.5-1x tier's grey so "too new to have a baseline yet" doesn't
+// read the same as "confirmed underperforming at 0.5-1x".
+function overlayRatioColor(ratio: number | null): string {
+  if (ratio == null) return "#a8adc0";
+  if (ratio < 0.5) return "#f87171";
+  if (ratio < 1) return "#94a3b8";
+  if (ratio < 2) return "#4ade80";
+  if (ratio < 3) return "#38bdf8";
+  return "#facc15";
+}
+
+// Same thresholds as VideoCard's overColor below, factored out so
+// ChannelStatCard's velocity checkpoint panel reads identically to the
+// grid's own overperform coloring — a video's 1h/3h/6h ratio and its
+// eventual lifetime ratio should never look like two different scales.
+function velocityRatioColor(ratio: number | null | undefined): string {
+  if (ratio == null) return "var(--text-muted)";
+  if (ratio < 0.5) return "var(--tier-danger)";
+  if (ratio < 1) return "var(--tier-grey)";
+  if (ratio < 2) return "var(--success)";
+  if (ratio < 3) return "var(--tier-blue)";
+  return "var(--warning)";
+}
+
+// A placeholder shaped like VideoCard itself (same thumbnail aspect ratio,
+// same title/meta line stack) rather than a generic spinner or bare "Loading
+// videos…" text — shown while the debounced fetch effect below is in
+// flight, so the layout doesn't jump between the loading and loaded states
+// and there's an immediate visual sense of "a grid of videos is coming"
+// instead of a blank pause.
+function VideoCardSkeleton({ mode }: { mode: ViewMode }) {
+  const pulse = { background: "var(--bg-elevated)" };
+  if (mode === "list") {
+    return (
+      <div className="video-card flex items-center gap-4 p-3">
+        <div className="shrink-0 rounded-lg w-32 h-20 animate-pulse" style={pulse} />
+        <div className="flex-1 min-w-0 flex flex-col gap-2">
+          <div className="h-3.5 w-3/4 rounded animate-pulse" style={pulse} />
+          <div className="h-3 w-1/3 rounded animate-pulse" style={pulse} />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="video-card flex flex-col">
+      <div className="w-full aspect-video animate-pulse" style={pulse} />
+      <div className="p-3 flex flex-col gap-2">
+        <div className="h-3.5 w-5/6 rounded animate-pulse" style={pulse} />
+        <div className="h-3 w-1/2 rounded animate-pulse" style={pulse} />
+      </div>
+    </div>
+  );
+}
+
+// Wrapped in React.memo: the video grid can render up to VIDEOS_PAGE_SIZE
+// (and more once "Load more" grows it) of these per render, and App()'s own
+// state (notifications, filter-bar UI, theme, etc.) changes far more often
+// than the `videos` array itself does. Without this, every one of those
+// unrelated re-renders re-runs every VideoCard's body (ratio-based color
+// calculation, JSX for two possible layouts) for no visual change — memo
+// skips a card entirely when its own props (video/mode/metric) haven't
+// changed. Trade-off: React does a shallow prop comparison per card on
+// every parent re-render, which costs a little more than doing nothing for
+// the (rare) renders where every card's props really did change.
+const VideoCard = React.memo(function VideoCard({ video, mode, metric = "average" }: { video: Video; mode: ViewMode; metric?: OverperformMetric }) {
+  const ratio = metric === "median" ? video.overperformRatioMedian : video.overperformRatio;
+  // Used for anything drawn directly on the card's own (theme-adaptive)
+  // background — list-mode ratio text, the sparkline. See
+  // overlayRatioColor above for the one place that must NOT adapt.
+  const overColor =
+    ratio == null ? "var(--text-muted)"
+    : ratio < 0.5 ? "var(--tier-danger)"   // well underperforming vs. baseline
+    : ratio < 1 ? "var(--tier-grey)"       // mildly underperforming vs. baseline
+    : ratio < 2 ? "var(--success)"
+    : ratio < 3 ? "var(--tier-blue)"
+    : "var(--warning)";
+  const baselineLabel = metric === "median" ? "vs median" : "vs avg";
+  // Thumbnail URLs come straight from YouTube's/Instagram's CDN and can 404 or
+  // time out well after the video was scraped (same staleness issue as
+  // avatarUrl — see the Avatar component above). A `thumbFailed` flag lets a
+  // broken thumbnail degrade to the same "no thumbnail" treatment each mode
+  // already has, instead of showing a permanently broken image icon.
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const thumb = thumbFailed ? null : video.thumbnail;
+  const Wrapper = video.url ? "a" : "div";
+  const wrapperProps = video.url ? { href: video.url, target: "_blank", rel: "noreferrer" } : {};
+
+  if (mode === "list") {
+    return (
+      <Wrapper {...(wrapperProps as any)} className="video-card flex flex-wrap items-center gap-4 p-3 cursor-pointer group">
+        <div className="relative shrink-0 rounded-lg overflow-hidden w-32 h-20" style={{ background: "var(--bg-elevated)" }}>
+          {thumb ? <img src={thumb} alt={video.title} className="size-full object-cover" loading="lazy" onError={() => setThumbFailed(true)} /> : null}
+          <div className="absolute bottom-1 right-1 text-[10px] px-1 rounded font-mono" style={{ background: "rgba(0,0,0,0.75)", color: "#fff" }}>
+            {video.duration}
+          </div>
+          <div className="absolute top-1 left-1">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${video.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>
+              {video.platform === "youtube" ? <YTIcon size={9} /> : <IGIcon size={9} />}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex-1 min-w-[160px]">
+          <div className="text-sm font-semibold truncate mb-1" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>{video.title}</div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>{video.channelName}</span>
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>·</span>
+            <span className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{fmtDate(video.publishedAt)}</span>
+            <span className="flex items-center gap-1 text-xs font-mono" style={{ color: "var(--text-muted)" }} title="Likes">
+              <HeartIcon />{fmtViewsN(video.likes)}
+            </span>
+            <span className="flex items-center gap-1 text-xs font-mono" style={{ color: "var(--text-muted)" }} title="Comments">
+              <CommentIcon />{fmtViewsN(video.comments)}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 sm:gap-6 shrink-0">
+          <div className="text-right">
+            <div className="text-sm font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViews(video.views)}</div>
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>views</div>
+          </div>
+          <div className="text-right">
+            <div className="text-sm font-bold font-mono flex items-center gap-1" style={{ color: overColor }}>
+              <TrendUpIcon />{fmtRatio(ratio)}
+            </div>
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{baselineLabel}</div>
+          </div>
+          <Sparkline ratio={ratio ?? 1} color={overColor} />
+          {ratio != null && ratio >= 2 && <span className="badge-overperform text-[10px] px-2 py-0.5 rounded-full font-mono font-bold">OVP</span>}
+          {video.hasSponsorSegment && (
+            <span className="badge-sponsor flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-bold"
+              title={video.sponsorSegmentSeconds != null ? `~${Math.round(video.sponsorSegmentSeconds)}s sponsored segment (via SponsorBlock)` : "Sponsored segment detected (via SponsorBlock)"}>
+              <MegaphoneIcon size={9} />SPONSORED
+            </span>
+          )}
+        </div>
+      </Wrapper>
+    );
+  }
+
+  return (
+    <Wrapper {...(wrapperProps as any)} className="video-card cursor-pointer group flex flex-col">
+      <div className="relative w-full aspect-video overflow-hidden" style={{ background: "var(--bg-elevated)" }}>
+        {thumb ? (
+          <img
+            src={thumb}
+            alt={video.title}
+            className="size-full object-cover group-hover:scale-105 transition-transform duration-300"
+            loading="lazy"
+            onError={() => setThumbFailed(true)}
+          />
+        ) : (
+          <div className="size-full flex items-center justify-center text-3xl">🎬</div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+        <div className="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 rounded font-mono font-medium" style={{ background: "rgba(0,0,0,0.8)", color: "#fff" }}>
+          {video.duration}
+        </div>
+        <div className="absolute top-2 left-2 flex gap-1">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-sm flex items-center gap-1 ${video.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>
+            {video.platform === "youtube" ? <YTIcon size={9} /> : <IGIcon size={9} />}
+            {video.platform === "youtube" ? "YT" : "IG"}
+          </span>
+          {video.hasSponsorSegment && (
+            <span className="badge-sponsor text-[10px] px-1.5 py-0.5 rounded-sm flex items-center gap-1"
+              title={video.sponsorSegmentSeconds != null ? `~${Math.round(video.sponsorSegmentSeconds)}s sponsored segment (via SponsorBlock)` : "Sponsored segment detected (via SponsorBlock)"}>
+              <MegaphoneIcon size={9} />SPONSORED
+            </span>
+          )}
+        </div>
+        <div className="absolute top-2 right-2">
+          {/* Opaque (not translucent) background — a low-opacity fill here
+              used to wash out against bright thumbnails and become
+              unreadable. Text color follows overColor: red below 1x
+              (underperforming), tiered green/yellow/orange at and above it. */}
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded-sm font-mono font-bold flex items-center gap-1"
+            style={{ background: "rgba(10,12,18,0.92)", color: overlayRatioColor(ratio), border: `1px solid ${overlayRatioColor(ratio)}` }}
+          >
+            <TrendUpIcon />{ratio == null ? "New" : `${ratio.toFixed(1)}x`}
+          </span>
+        </div>
+      </div>
+
+      <div className="p-3 flex flex-col gap-2 flex-1">
+        <div className="text-sm font-semibold leading-snug line-clamp-2" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>{video.title}</div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs truncate" style={{ color: "var(--text-muted)", fontFamily: "Lora, serif" }}>{video.channelName}</span>
+          <span className="text-[11px] font-mono shrink-0 ml-1" style={{ color: "var(--text-muted)" }}>{fmtDate(video.publishedAt)}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1 text-[11px] font-mono" style={{ color: "var(--text-muted)" }} title="Likes">
+            <HeartIcon />{fmtViewsN(video.likes)}
+          </span>
+          <span className="flex items-center gap-1 text-[11px] font-mono" style={{ color: "var(--text-muted)" }} title="Comments">
+            <CommentIcon />{fmtViewsN(video.comments)}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 mt-auto pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="flex-1">
+            <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>Views</div>
+            <div className="text-sm font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViews(video.views)}</div>
+          </div>
+          <div className="flex-1">
+            <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>{metric === "median" ? "Median" : "Avg"}</div>
+            <div className="text-sm font-mono" style={{ color: "var(--text-muted)" }}>{fmtViewsN(metric === "median" ? video.medianViews : video.avgViews)}</div>
+          </div>
+          <div>
+            <Sparkline ratio={ratio ?? 1} color={overColor} />
+          </div>
+        </div>
+      </div>
+    </Wrapper>
+  );
+});
+
+// ─── Chart Panel ──────────────────────────────────────────────────────────────
+
+function ChartPanel({ videos, metric }: { videos: Video[]; metric: OverperformMetric }) {
+  return (
+    <div className="mx-5 mb-4 rounded-xl p-4" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>Overperformance by Channel</h2>
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>Ratio vs channel {metric === "median" ? "median" : "average"} baseline — filtered results</div>
+        </div>
+        <div className="flex items-center gap-3 text-xs" style={{ fontFamily: "Lora, serif" }}>
+          <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm inline-block" style={{ background: "var(--yt-red)" }} />YouTube</span>
+          <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm inline-block" style={{ background: "var(--ig-pink)" }} />Instagram</span>
+        </div>
+      </div>
+      <BarChart videos={videos} metric={metric} />
+    </div>
+  );
+}
+
+// ─── Competitor Roster ────────────────────────────────────────────────────────
+// Fills in what was previously just a sidebar nav item with no content: add,
+// tag, and remove the channels this workspace tracks (see POST/PATCH/DELETE
+// /api/channels in backend/app/routers/channels.py). Adding a channel here
+// registers it for the next scrape run — it does not scrape immediately (see
+// that router's module docstring for why).
+
+function CompetitorRoster({
+  channels,
+  onChanged,
+  loading,
+  error,
+  onRetry,
+}: {
+  channels: Channel[];
+  onChanged: () => void;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
+}) {
+  const [platform, setPlatform] = useState<"youtube" | "instagram">("youtube");
+  const [handle, setHandle] = useState("");
+  const [cohort, setCohort] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Per-channel in-flight tracking for the remove/pause-resume buttons below
+  // — without it, a rapid double-click (or a slow connection making the
+  // first click's request take a while to resolve) fires a second DELETE/
+  // PATCH for the same channel before the first has come back, and a failed
+  // request had no way to tell the user anything went wrong at all (the row
+  // just silently stayed as-is).
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    // The submit button is already `disabled={submitting || ...}`, but that
+    // alone leaves a narrow window for a rapid double-click/double-Enter to
+    // fire before React re-renders the disabled state — every other mutation
+    // handler in this file guards explicitly rather than relying on the
+    // button alone, so this one should too.
+    if (submitting || !handle.trim()) return;
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      await createChannel({ platform, handle: handle.trim(), cohort: cohort.trim() || null });
+      setHandle("");
+      setCohort("");
+      onChanged();
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : "Could not add that channel.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // useCallback (keyed on `onChanged` and `pendingIds`) so these keep a
+  // stable-ish identity across CompetitorRoster's own re-renders (e.g. every
+  // keystroke in the add-channel form above). ChannelCard is passed these
+  // directly instead of wrapping them in a fresh per-item arrow function at
+  // the .map call site below — that inline-arrow pattern would hand
+  // ChannelCard a new onToggleActive/onRemove reference on every render
+  // regardless, which defeats ChannelCard's React.memo before it ever gets
+  // to compare props.
+  const handleRemove = useCallback(
+    async (id: string) => {
+      if (pendingIds.has(id)) return; // a remove is already in flight for this row
+      setPendingIds(prev => new Set(prev).add(id));
+      setRowErrors(prev => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      try {
+        await deleteChannel(id);
+        onChanged();
+        // No explicit success cleanup of pendingIds/rowErrors for this id:
+        // onChanged() reloads the channel list, and a successful delete
+        // means this channel (and its ChannelCard) won't be in it anymore.
+      } catch (err) {
+        setRowErrors(prev => ({
+          ...prev,
+          [id]: err instanceof ApiError ? err.message : "Could not remove this channel.",
+        }));
+        setPendingIds(prev => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [onChanged, pendingIds],
+  );
+
+  const handleToggleActive = useCallback(
+    async (c: Channel) => {
+      if (pendingIds.has(c.id)) return; // a toggle is already in flight for this row
+      setPendingIds(prev => new Set(prev).add(c.id));
+      setRowErrors(prev => {
+        if (!(c.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[c.id];
+        return next;
+      });
+      try {
+        await updateChannel(c.id, { isActive: !c.isActive });
+        onChanged();
+      } catch (err) {
+        setRowErrors(prev => ({
+          ...prev,
+          [c.id]: err instanceof ApiError ? err.message : "Could not update this channel.",
+        }));
+      } finally {
+        setPendingIds(prev => {
+          if (!prev.has(c.id)) return prev;
+          const next = new Set(prev);
+          next.delete(c.id);
+          return next;
+        });
+      }
+    },
+    [onChanged, pendingIds],
+  );
+
+  return (
+    <div className="p-5 max-w-3xl">
+      <form onSubmit={handleAdd} className="rounded-xl p-4 mb-5 flex flex-wrap items-end gap-3" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+        <div>
+          <label htmlFor="add-channel-platform" className="text-[10px] uppercase tracking-widest mb-1 block" style={{ color: "var(--text-muted)" }}>Platform</label>
+          <select id="add-channel-platform" value={platform} onChange={e => setPlatform(e.target.value as "youtube" | "instagram")} className="select-custom text-xs">
+            <option value="youtube">YouTube</option>
+            <option value="instagram">Instagram</option>
+          </select>
+        </div>
+        <div className="flex-1 min-w-[200px]">
+          <label htmlFor="add-channel-handle" className="text-[10px] uppercase tracking-widest mb-1 block" style={{ color: "var(--text-muted)" }}>
+            {platform === "youtube" ? "@handle, channel URL, or channel ID" : "Instagram username"}
+          </label>
+          <input id="add-channel-handle" value={handle} onChange={e => setHandle(e.target.value)} placeholder={platform === "youtube" ? "@mkbhd" : "theverge"}
+            className="select-custom text-xs w-full" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+        </div>
+        <div>
+          <label htmlFor="add-channel-cohort" className="text-[10px] uppercase tracking-widest mb-1 block" style={{ color: "var(--text-muted)" }}>Cohort (optional)</label>
+          <input id="add-channel-cohort" value={cohort} onChange={e => setCohort(e.target.value)} placeholder="Tech Giants"
+            className="select-custom text-xs w-40" />
+        </div>
+        <button type="submit" disabled={submitting || !handle.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-50"
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}>
+          <PlusIcon />
+          {submitting ? "Adding…" : "Track channel"}
+        </button>
+        {formError && <div className="text-xs w-full" style={{ color: "var(--tier-orange)" }}>{formError}</div>}
+      </form>
+
+      {error ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-4xl mb-3">⚠️</div>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>Couldn't load your tracked channels</div>
+          <div className="text-xs mt-1">{error}</div>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="mt-3 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity"
+              style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+            >
+              Try again
+            </button>
+          )}
+        </div>
+      ) : loading ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>Loading your tracked channels…</div>
+        </div>
+      ) : channels.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-4xl mb-3">📡</div>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>No competitors tracked yet</div>
+          <div className="text-xs mt-1">Add a YouTube or Instagram handle above to start scraping it.</div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {channels.map(c => (
+            <ChannelCard
+              key={c.id}
+              channel={c}
+              onToggleActive={handleToggleActive}
+              onRemove={handleRemove}
+              pending={pendingIds.has(c.id)}
+              error={rowErrors[c.id]}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Avatar (with broken-image fallback) ───────────────────────────────────────
+// A channel/video's avatarUrl/channelAvatarUrl points straight at YouTube's or
+// Instagram's own CDN (see PRODUCTION_ROADMAP.md's "Thumbnail caching/
+// proxying" note on why that's not proxied through this app) — those URLs do
+// go stale or 404, especially Instagram's, which are already known to expire.
+// A plain <img> with no error handling would just show the browser's own
+// broken-image glyph forever in that case; this swaps to the same initials
+// fallback every call site already uses for "no avatar URL at all", so a
+// dead image degrades to the same clean fallback as a missing one instead of
+// looking broken.
+function Avatar({ url, alt, initials, className }: { url: string | null | undefined; alt: string; initials: React.ReactNode; className: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return <>{initials}</>;
+  return <img src={url} alt={alt} className={className} onError={() => setFailed(true)} />;
+}
+
+// ─── Channel Card ─────────────────────────────────────────────────────────────
+// Each tracked competitor's row in the roster, expanded from a plain name+subs
+// line into a real card: identity/actions on top, then the channel-level
+// stats (avg views, videos tracked, last published) that back it — those
+// three are computed server-side from the channel's videos, see ChannelOut in
+// backend/app/schemas.py. A channel that hasn't been scraped yet just shows
+// "—" for them rather than 0, since 0 avg views would misleadingly read as
+// "this channel underperforms" instead of "no data yet".
+
+// Memoized for the same reason as VideoCard above — CompetitorRoster maps
+// one of these per tracked channel, and its own local state (the add-channel
+// form fields, cohort filter, etc.) changes far more often than any given
+// channel's own data.
+const ChannelCard = React.memo(function ChannelCard({
+  channel: c,
+  onToggleActive,
+  onRemove,
+  pending,
+  error,
+}: {
+  channel: Channel;
+  onToggleActive: (channel: Channel) => void;
+  onRemove: (id: string) => void;
+  pending?: boolean;
+  error?: string;
+}) {
+  return (
+    <div className="video-card flex flex-col gap-3 p-3">
+      <div className="flex items-center gap-3">
+        <div className="flex items-center justify-center rounded-full size-9 shrink-0 text-xs font-bold" style={{ background: "var(--bg-elevated)", color: "var(--accent-light)" }}>
+          <Avatar url={c.avatarUrl} alt={c.name} initials={c.avatar} className="size-9 rounded-full object-cover" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>{c.name}</div>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span className={`text-[10px] px-1.5 rounded ${c.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>{c.platform === "youtube" ? "YT" : "IG"}</span>
+            <span className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>@{c.handle}</span>
+            {c.cohort && <span className="filter-chip">{c.cohort}</span>}
+            {!c.isActive && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}>Paused</span>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => onToggleActive(c)}
+          disabled={pending}
+          className="text-xs px-2 py-1 rounded-lg shrink-0 disabled:opacity-50"
+          style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+        >
+          {pending ? "…" : c.isActive ? "Pause" : "Resume"}
+        </button>
+        <button
+          onClick={() => onRemove(c.id)}
+          disabled={pending}
+          className="flex items-center justify-center rounded-lg size-8 shrink-0 hover-surface disabled:opacity-50"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <TrashIcon />
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-xs -mt-2" style={{ color: "var(--tier-danger)" }}>
+          {error}
+        </div>
+      )}
+
+      <div className="flex items-center gap-5 flex-wrap pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+        <div>
+          <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>Subscribers</div>
+          <div className="text-sm font-bold font-mono" style={{ color: "var(--text-primary)" }}>{c.subs}</div>
+        </div>
+        <div>
+          <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>Avg views</div>
+          <div className="text-sm font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViewsN(c.avgViews)}</div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span style={{ color: "var(--text-muted)" }}><FilmIcon /></span>
+          <div>
+            <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>Tracked</div>
+            <div className="text-sm font-mono" style={{ color: "var(--text-muted)" }}>{c.videoCount} video{c.videoCount === 1 ? "" : "s"}</div>
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] mb-0.5" style={{ color: "var(--text-muted)" }}>Last published</div>
+          <div className="text-sm font-mono" style={{ color: "var(--text-muted)" }}>{c.lastPublishedAt ? fmtDate(c.lastPublishedAt) : "—"}</div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ─── Channel Stat Card (Overperformance strip) ─────────────────────────────────
+// A compact, read-only cousin of ChannelCard above — sits in a horizontally
+// scrollable strip right under the Overperformance page's sticky filter bar
+// (see visibleChannels in App()) to give at-a-glance channel context (subs,
+// avg views, videos tracked, last published) for whichever channels the
+// current filter/grid is actually showing. No pause/remove actions here —
+// that's the Competitor Roster's job. Clicking the card itself narrows the
+// grid to just this channel (sets filters.channels to [c.id]) — a shortcut
+// for the same thing the "Channels" dropdown in the filter bar already does,
+// since picking one channel out of a strip you're already looking at is
+// faster than opening a dropdown and finding it in a list.
+
+// Fixed widths the expand/collapse transition animates between — a CSS
+// transition needs concrete numbers on both ends, "auto" doesn't animate.
+const CHANNEL_CARD_WIDTH = 216;
+const VELOCITY_PANEL_WIDTH = 300;
+
+// Memoized for the same reason as VideoCard/ChannelCard above. Note this
+// only helps for the (common) case where this card's own props didn't
+// change — see the visibleChannels.map call site: onClick/onClear are
+// still recreated per render there, so a change to *this* channel's active
+// state still re-renders every card in the strip once; memo mainly pays off
+// by skipping the (more frequent) re-renders that come from unrelated state
+// elsewhere in App() rather than from anything in this strip changing.
+function ChannelStatCard({ channel: c, active, onClick, onClear }: { channel: Channel; active: boolean; onClick: () => void; onClear: () => void }) {
+  // Selecting a channel (the existing click-to-filter behavior below is
+  // unchanged) is also what expands it — "active" already means "the one
+  // channel currently singled out", so reusing it here needs no new
+  // selection state, and the existing clear ("X") button above already
+  // doubles as the close action: clearing the filter un-singles the
+  // channel, which collapses it right back.
+  const [velocityVideos, setVelocityVideos] = useState<Video[] | null>(null);
+  const [velocityLoading, setVelocityLoading] = useState(false);
+  const [velocityError, setVelocityError] = useState<string | null>(null);
+  const [velocityRetryTick, setVelocityRetryTick] = useState(0);
+  // Delays the panel's own fade-in slightly past when its width starts
+  // opening, so content doesn't pop in mid-slide — collapses instantly
+  // instead (nothing to see once the panel's shrinking anyway).
+  const [showVelocityContent, setShowVelocityContent] = useState(false);
+
+  const isYouTube = c.platform === "youtube";
+
+  useEffect(() => {
+    if (!active) {
+      setShowVelocityContent(false);
+      return;
+    }
+    if (!isYouTube) {
+      // No fetch needed for Instagram — the panel just fades in its static
+      // "YouTube-only" message on the same delay as the real data case
+      // below, so both platforms feel like the same interaction.
+      setShowVelocityContent(false);
+      const t = window.setTimeout(() => setShowVelocityContent(true), 140);
+      return () => window.clearTimeout(t);
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setVelocityLoading(true);
+    setVelocityError(null);
+    setShowVelocityContent(false);
+    // A dedicated fetch, independent of the main grid's own filters/paging
+    // (see the Filters state in App()) — this channel's most recent
+    // uploads regardless of what date range or platform the rest of the
+    // dashboard currently has selected, since early-velocity only ever
+    // matters for a channel's newest videos. Passes `signal` (matching the
+    // main video-grid fetch's own pattern) so expanding one channel right
+    // after another actually cancels the first request server-side instead
+    // of just discarding a response that ran to completion anyway.
+    fetchVideos(
+      {
+        platform: "all",
+        channels: [c.id],
+        dateFrom: "",
+        dateTo: "",
+        viewsThreshold: "",
+        format: "all",
+        sortBy: "date",
+        limit: 6,
+      },
+      { signal: controller.signal },
+    )
+      .then(result => {
+        if (cancelled) return;
+        setVelocityVideos(result.videos);
+        setVelocityLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // A cancellation (this effect re-ran, or the panel collapsed) isn't
+        // a real failure — nothing to show for it, and the next run/expand
+        // already resets velocityError to null above.
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setVelocityVideos([]);
+        setVelocityError(err instanceof Error ? err.message : "Couldn't load velocity data.");
+        setVelocityLoading(false);
+      });
+    const showTimer = window.setTimeout(() => !cancelled && setShowVelocityContent(true), 140);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(showTimer);
+    };
+  }, [active, isYouTube, c.id, velocityRetryTick]);
+
+  const hasAnyCheckpoint = (velocityVideos ?? []).some(
+    v => v.h1Views != null || v.h3Views != null || v.h6Views != null,
+  );
+
+  return (
+    <div
+      className="video-card group relative flex shrink-0"
+      style={{
+        width: active ? CHANNEL_CARD_WIDTH + VELOCITY_PANEL_WIDTH : CHANNEL_CARD_WIDTH,
+        cursor: "pointer",
+        borderColor: active ? "var(--accent)" : undefined,
+        boxShadow: active ? "0 0 0 1px var(--accent)" : undefined,
+        transition: "width 0.28s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.18s, box-shadow 0.18s",
+      }}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      title={active ? `Showing only ${c.name} — pick another channel or clear to change` : `Show only videos from ${c.name}, and see its early-velocity checkpoints`}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
+      {/* Clears this channel back out of the filter — translucent and
+          barely visible at rest so it doesn't clutter the card, fully
+          opaque on hover so it's easy to hit once you're going for it.
+          Also this card's "close" action: clearing collapses it. */}
+      <button
+        onClick={e => { e.stopPropagation(); onClear(); }}
+        title={active ? `Close ${c.name}'s velocity panel` : `Clear ${c.name} filter`}
+        aria-label={active ? `Close ${c.name}'s velocity panel` : `Clear ${c.name} filter`}
+        className="absolute top-1 right-1 flex items-center justify-center rounded-full opacity-20 group-hover:opacity-100 hover:!opacity-100 transition-opacity z-10"
+        style={{ width: 24, height: 24, background: "rgba(10,12,18,0.85)", color: "var(--text-secondary)" }}
+      >
+        <XIcon size={8} />
+      </button>
+
+      {/* Left: original compact stats — unchanged in content, now just the
+          fixed-width left column of a two-column card when expanded. */}
+      <div className="flex flex-col gap-2 p-3 shrink-0" style={{ width: CHANNEL_CARD_WIDTH }}>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center justify-center rounded-full size-8 shrink-0 text-[11px] font-bold" style={{ background: "var(--bg-elevated)", color: "var(--accent-light)" }}>
+            <Avatar url={c.avatarUrl} alt={c.name} initials={c.avatar} className="size-8 rounded-full object-cover" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-semibold truncate pr-4" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>{c.name}</div>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className={`text-[9px] px-1 rounded ${c.platform === "youtube" ? "badge-yt" : "badge-ig"}`}>{c.platform === "youtube" ? "YT" : "IG"}</span>
+              {c.cohort && <span className="filter-chip" style={{ fontSize: 9, padding: "1px 5px" }}>{c.cohort}</span>}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pt-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+          <div>
+            <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Subscribers</div>
+            <div className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{c.subs}</div>
+          </div>
+          <div>
+            <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Avg views</div>
+            <div className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViewsN(c.avgViews)}</div>
+          </div>
+          <div>
+            <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Median (last 10)</div>
+            <div className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViewsN(c.medianViewsLast10)}</div>
+          </div>
+          <div>
+            <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Tracked</div>
+            <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{c.videoCount} vid{c.videoCount === 1 ? "" : "s"}</div>
+          </div>
+          <div className="col-span-2">
+            <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Last pub.</div>
+            <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{c.lastPublishedAt ? fmtDate(c.lastPublishedAt) : "—"}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Right: early-velocity panel — width animates 0 -> VELOCITY_PANEL_WIDTH
+          in lockstep with the outer card, content fades in slightly after
+          (see showVelocityContent above) so it never looks like it's being
+          squeezed into place mid-slide. Always rendered (never unmounted)
+          so the collapse has something to animate back down to 0 from. */}
+      <div
+        className="shrink-0 overflow-hidden"
+        style={{
+          width: active ? VELOCITY_PANEL_WIDTH : 0,
+          transition: "width 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+          borderLeft: active ? "1px solid var(--border)" : "1px solid transparent",
+        }}
+      >
+        <div className="flex flex-col gap-2 p-3 h-full" style={{ width: VELOCITY_PANEL_WIDTH, opacity: showVelocityContent ? 1 : 0, transition: "opacity 0.22s ease" }}>
+          <div className="flex items-center gap-1.5" style={{ color: "var(--accent-light)" }}>
+            <ClockIcon size={11} />
+            <span className="text-[10px] font-bold uppercase tracking-wide">Early Velocity</span>
+          </div>
+
+          {!isYouTube ? (
+            <p className="text-[11px] leading-snug pt-1" style={{ color: "var(--text-muted)" }}>
+              Velocity tracking is YouTube-only — there's no equivalent checkpoint data for Instagram.
+            </p>
+          ) : velocityLoading ? (
+            <p className="text-[11px] pt-1" style={{ color: "var(--text-muted)" }}>Loading…</p>
+          ) : velocityError ? (
+            <p className="text-[11px] leading-snug pt-1" style={{ color: "var(--tier-danger)" }}>
+              {velocityError}{" "}
+              <button
+                onClick={() => setVelocityRetryTick(t => t + 1)}
+                className="underline"
+                style={{ color: "var(--accent-light)" }}
+              >
+                Retry
+              </button>
+            </p>
+          ) : !hasAnyCheckpoint ? (
+            <p className="text-[11px] leading-snug pt-1" style={{ color: "var(--text-muted)" }}>
+              No checkpoints yet — they'll appear automatically as this channel's new uploads cross their 1h, 3h and 6h marks.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2 overflow-y-auto pr-0.5" style={{ maxHeight: 260 }}>
+              {(velocityVideos ?? [])
+                .filter(v => v.h1Views != null || v.h3Views != null || v.h6Views != null)
+                .map(v => (
+                  <div key={v.id} className="rounded-lg p-2" style={{ background: "var(--bg-elevated)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold truncate" style={{ color: "var(--text-primary)" }} title={v.title}>{v.title}</span>
+                      <span className="text-[9px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>{fmtDate(v.publishedAt)}</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+                      {([
+                        { label: "1h", views: v.h1Views, ratio: v.h1Ratio },
+                        { label: "3h", views: v.h3Views, ratio: v.h3Ratio },
+                        { label: "6h", views: v.h6Views, ratio: v.h6Ratio },
+                      ] as const).map(cp => (
+                        <div key={cp.label} className="flex flex-col items-center gap-0.5 rounded-md py-1.5" style={{ background: "var(--bg-card)" }}>
+                          <span className="text-[8px] uppercase tracking-wide font-semibold" style={{ color: "var(--text-muted)" }}>{cp.label}</span>
+                          <span className="text-[11px] font-mono font-bold" style={{ color: cp.views == null ? "var(--text-muted)" : "var(--text-primary)" }}>
+                            {cp.views == null ? "—" : fmtViewsN(cp.views)}
+                          </span>
+                          {cp.ratio != null && (
+                            <span className="text-[9px] font-mono font-bold" style={{ color: velocityRatioColor(cp.ratio) }}>
+                              {fmtRatio(cp.ratio)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Topic Search ("is this trending") ─────────────────────────────────────
+// A user-triggered YouTube search, entirely separate from the tracked-
+// channel data everywhere else in this file — see backend/app/topic_search.py
+// for the full method. Only the latest query's result is ever cached
+// server-side (GET /api/search/latest survives a page reload without
+// spending quota; POST /api/search/topic runs a fresh, real search and
+// overwrites it), so this view's own state just mirrors whatever that
+// endpoint currently holds rather than accumulating any history itself.
+
+type TrendRegion = "IN" | "GLOBAL";
+
+function TopicSearchView({ quotaBudget, quotaUsedToday }: { quotaBudget: number | null; quotaUsedToday: number | null }) {
+  const [query, setQuery] = useState("");
+  // The page-reload path — see fetchLatestTopicSearch's docstring — reuses
+  // useAsync (see src/hooks/useAsync.ts) rather than a hand-rolled
+  // fetch+loading useEffect. A failed initial load is now distinguished from
+  // "no searches yet" (see initialLoadError below) rather than silently
+  // falling through to that empty state — a broken GET /api/search/latest
+  // looked identical to "you've simply never searched" before, which is
+  // misleading and gives no way to retry short of reloading the page.
+  const {
+    data: result,
+    setData: setResult,
+    loading: initialLoading,
+    error: initialLoadError,
+    reload: reloadLatestSearch,
+  } = useAsync(fetchLatestTopicSearch, [], null as TopicSearchResult | null);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Gating/date-range/region filters — same defaults called out in the
+  // brief (500K subs, last 30 days, India), same date-preset dropdown as
+  // the Overperformance tab's date filter (DATE_PRESETS/presetToRange,
+  // above) so picking "Custom range" behaves identically here.
+  const [minSubscribers, setMinSubscribers] = useState("500000");
+  const [datePreset, setDatePreset] = useState<DatePreset>("1m");
+  const [dateRange, setDateRange] = useState(() => presetToRange("1m"));
+  const [region, setRegion] = useState<TrendRegion>("IN");
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed || searching) return;
+    setSearching(true);
+    setError(null);
+    try {
+      setResult(
+        await searchTopic(trimmed, {
+          minSubscribers: Number(minSubscribers) || 0,
+          dateFrom: dateRange.dateFrom,
+          dateTo: dateRange.dateTo,
+          region,
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong — please try again.");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const remainingQuota = quotaBudget != null && quotaUsedToday != null ? Math.max(0, quotaBudget - quotaUsedToday) : null;
+  const searchDisabled = searching || !query.trim();
+
+  return (
+    <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex flex-col gap-2 mb-6">
+        <form onSubmit={handleSearch} className="flex items-center gap-2 max-w-xl">
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="e.g. iPhone 17 review"
+            aria-label="Topic search query"
+            className="flex-1 px-3 py-2 rounded-lg text-sm"
+            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+          />
+          <button
+            type="submit"
+            disabled={searchDisabled}
+            className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors shrink-0"
+            style={{
+              background: searchDisabled ? "var(--bg-elevated)" : "var(--accent)",
+              color: searchDisabled ? "var(--text-muted)" : "var(--on-accent)",
+              cursor: searchDisabled ? "not-allowed" : "pointer",
+            }}
+          >
+            {searching ? "Searching…" : "Search"}
+          </button>
+        </form>
+
+        {/* Gating/date-range/region filters — sent with the next search,
+            not applied retroactively to whatever's already on screen (this
+            isn't a client-side filter over cached results; each change
+            takes effect on the next POST /api/search/topic). */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative shrink-0">
+            <input
+              type="number"
+              min={0}
+              placeholder="Min subscribers"
+              value={minSubscribers}
+              onChange={e => setMinSubscribers(e.target.value)}
+              className="select-custom text-xs w-36"
+              style={{ fontFamily: "JetBrains Mono, monospace" }}
+              title="Only channels with at least this many subscribers are ranked"
+              aria-label="Minimum subscribers — only channels with at least this many subscribers are ranked"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <select
+              value={datePreset}
+              onChange={e => {
+                const preset = e.target.value as DatePreset;
+                setDatePreset(preset);
+                if (preset !== "custom") setDateRange(presetToRange(preset));
+              }}
+              className="select-custom text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+              {DATE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+            {datePreset === "custom" && (
+              <>
+                <input type="date" value={dateRange.dateFrom}
+                  onChange={e => setDateRange({ ...dateRange, dateFrom: e.target.value })}
+                  className="select-custom text-xs" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+                <span style={{ color: "var(--text-muted)" }} className="text-xs">→</span>
+                <input type="date" value={dateRange.dateTo}
+                  onChange={e => setDateRange({ ...dateRange, dateTo: e.target.value })}
+                  className="select-custom text-xs" style={{ fontFamily: "JetBrains Mono, monospace" }} />
+              </>
+            )}
+          </div>
+
+          <div className="flex rounded-lg overflow-hidden shrink-0" style={{ border: "1px solid var(--border)" }} title="Restrict the YouTube search to India, or search worldwide">
+            {(["IN", "GLOBAL"] as TrendRegion[]).map(r => (
+              <button key={r} type="button" onClick={() => setRegion(r)}
+                className="px-3 py-1.5 text-xs transition-all"
+                style={{
+                  background: region === r ? "var(--accent)" : "var(--bg-elevated)",
+                  color: region === r ? "var(--on-accent)" : "var(--text-muted)",
+                  fontFamily: "Inter, sans-serif",
+                  fontWeight: 500,
+                }}>
+                {r === "IN" ? "India" : "Global"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {remainingQuota != null && (
+          <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            ~120 quota units per search · ~{remainingQuota.toLocaleString()} left in today's budget
+          </div>
+        )}
+        {error && (
+          <div
+            className="text-xs mt-1 px-3 py-2 rounded-lg max-w-xl"
+            style={{ background: "rgba(248,113,113,0.1)", color: "var(--tier-danger)", border: "1px solid var(--tier-danger)" }}
+          >
+            {error}
+          </div>
+        )}
+      </div>
+
+      {initialLoading ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>Loading last search…</div>
+        </div>
+      ) : searching ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>Searching YouTube and checking channel history…</div>
+        </div>
+      ) : initialLoadError && !result ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-sm" style={{ color: "var(--tier-danger)", fontFamily: "Lora, serif" }}>Couldn't load your last search</div>
+          <div className="text-xs mt-1 max-w-sm text-center">{initialLoadError}</div>
+          <button onClick={reloadLatestSearch} className="mt-3 text-xs underline" style={{ color: "var(--accent-light)" }}>
+            Retry
+          </button>
+        </div>
+      ) : !result ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-4xl mb-3">🔍</div>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>No searches yet</div>
+          <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Try a topic above to see how it's performing on YouTube right now.</div>
+        </div>
+      ) : (
+        <TopicSearchResults result={result} />
+      )}
+    </div>
+  );
+}
+
+function TopicSearchResults({ result }: { result: TopicSearchResult }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-4 p-4 rounded-xl" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+        <div>
+          <div className="text-[9px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Topic</div>
+          <div className="text-sm font-semibold" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>"{result.query}"</div>
+        </div>
+        <div className="h-8 w-px shrink-0" style={{ background: "var(--border)" }} />
+        <div>
+          <div className="text-[9px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Hype</div>
+          <div className="text-base font-bold font-mono" style={{ color: result.outperformCount > 0 ? "var(--success)" : "var(--text-primary)" }}>
+            {result.outperformCount} of {result.channels.length} outperforming
+          </div>
+        </div>
+        <div className="h-8 w-px shrink-0" style={{ background: "var(--border)" }} />
+        <div>
+          <div className="text-[9px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Candidates considered</div>
+          <div className="text-sm font-mono" style={{ color: "var(--text-secondary)" }}>{result.totalCandidates}</div>
+        </div>
+        <div className="ml-auto text-[10px] text-right" style={{ color: "var(--text-muted)" }}>
+          {result.regionCode ?? "Global"} · {result.dateFrom ? `last ${result.lookbackDays}d` : "all time"} · ≥{fmtViewsN(result.minSubscribers)} subs
+          <br />
+          searched {fmtRelativeTime(result.searchedAt) ?? "just now"}
+        </div>
+      </div>
+
+      {result.channels.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48" style={{ color: "var(--text-muted)" }}>
+          <div className="text-4xl mb-3">🤷</div>
+          <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>No channels cleared the {fmtViewsN(result.minSubscribers)}+ subscriber bar</div>
+          <div className="text-xs mt-1">Try a broader or more popular topic.</div>
+        </div>
+      ) : (
+        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+          {result.channels.map(ch => (
+            <TopicSearchChannelCard key={ch.channelId} channel={ch} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopicSearchChannelCard({ channel: ch }: { channel: TopicSearchChannelResult }) {
+  return (
+    <a
+      href={ch.videoUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="video-card flex flex-col gap-2 p-3"
+      style={{ color: "inherit", textDecoration: "none" }}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className="flex items-center justify-center rounded-full size-8 shrink-0 text-[11px] font-bold overflow-hidden"
+          style={{ background: "var(--bg-elevated)", color: "var(--accent-light)" }}
+        >
+          <Avatar
+            url={ch.channelAvatarUrl}
+            alt={ch.channelName}
+            initials={ch.channelName.slice(0, 2).toUpperCase()}
+            className="size-8 rounded-full object-cover"
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-semibold truncate" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>{ch.channelName}</div>
+          <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>{fmtViewsN(ch.subscriberCount)} subscribers</div>
+        </div>
+        <div className="text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--bg-elevated)", color: "var(--accent-light)" }}>
+          #{ch.rank}
+        </div>
+      </div>
+
+      <div className="text-xs font-medium leading-snug line-clamp-2" style={{ color: "var(--text-primary)" }} title={ch.videoTitle}>
+        {ch.videoTitle}
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pt-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+        <div>
+          <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Views</div>
+          <div className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViewsN(ch.videoViews)}</div>
+        </div>
+        <div>
+          <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Channel median</div>
+          <div className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{fmtViewsN(ch.channelMedianViews)}</div>
+        </div>
+        <div>
+          <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>Published</div>
+          <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{fmtDate(ch.videoPublishedAt)}</div>
+        </div>
+        <div>
+          <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>vs. median</div>
+          <div className="text-xs font-bold font-mono" style={{ color: velocityRatioColor(ch.overperformRatio) }}>{fmtRatio(ch.overperformRatio)}</div>
+        </div>
+      </div>
+    </a>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+
+const EMPTY_VIDEOS: Video[] = [];
+const EMPTY_CHANNELS: Channel[] = [];
+const EMPTY_COHORTS: CohortSummary[] = [];
+
+// How many videos one page fetches. The backend caps a single request at
+// 2000 (see backend/app/routers/videos.py) and previously the frontend
+// never sent a `limit` at all, silently falling back to its default of
+// 500 — anything past that was invisible in the grid no matter how many
+// videos actually matched the filters. Paging in smaller chunks with an
+// explicit "Load more" button keeps both the request size and the number
+// of cards rendered at once reasonable regardless of how large the table
+// grows.
+const VIDEOS_PAGE_SIZE = 60;
+
+// How many VideoCardSkeleton placeholders to show while videos are loading —
+// enough to fill a typical viewport without rendering all VIDEOS_PAGE_SIZE
+// (60) of them for a state that's discarded the moment real data arrives.
+const SKELETON_KEYS = Array.from({ length: 8 }, (_, i) => `skeleton-${i}`);
+
+export default function App() {
+  const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? detectSystemTheme());
+
+  // Reflect the current theme onto <html> so src/index.css's
+  // ":root[data-theme=...]" overrides apply.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  // Keep following the OS/browser theme live — but only until the user
+  // makes an explicit choice via the sidebar toggle (handleToggleTheme),
+  // which persists to localStorage and takes over from the system from
+  // then on in this browser.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const handler = (e: MediaQueryListEvent) => {
+      if (getStoredTheme() != null) return; // explicit choice already governs
+      setTheme(e.matches ? "light" : "dark");
+    };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  const handleToggleTheme = useCallback(() => {
+    setTheme(prev => {
+      const next: Theme = prev === "light" ? "dark" : "light";
+      try {
+        window.localStorage.setItem("theme", next);
+      } catch {
+        // privacy mode / storage disabled — theme still applies for this
+        // page view, it just won't be remembered on the next visit.
+      }
+      return next;
+    });
+  }, []);
+
+  // Defaults open on desktop-width screens (unchanged prior behavior), but
+  // closed on first load on a phone-width viewport — at 240px fixed width,
+  // the sidebar previously ate most of a ~375px-wide screen before the user
+  // did anything. The toggle button in the top bar still opens/closes it
+  // from either starting point; this only changes the initial state.
+  const [sidebarOpen, setSidebarOpen] = useState(() => (typeof window === "undefined" ? true : window.innerWidth >= 768));
+  const [activeSection, setActiveSection] = useState("Overperformance");
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  const [filters, setFilters] = useState<Filters>(getDefaultFilters);
+
+  // These three (plus scraperSettings below) used to be a plain useState
+  // each, all populated by hand-rolled `fetchX().then(setX).catch(() => {})`
+  // calls inside refreshChannelsAndCohorts — useAsync (src/hooks/useAsync.ts)
+  // consolidates that repeated shape into one implementation, reused here
+  // and by TopicSearchView's initial load.
+  const channelsAsync = useAsync(fetchChannels, [], EMPTY_CHANNELS);
+  const cohortsAsync = useAsync(fetchCohorts, [], EMPTY_COHORTS);
+  const systemStatusAsync = useAsync(fetchSystemStatus, [], null as SystemStatus | null);
+  const channels = channelsAsync.data;
+  const cohorts = cohortsAsync.data;
+  const systemStatus = systemStatusAsync.data;
+
+  const [videos, setVideos] = useState<Video[]>(EMPTY_VIDEOS);
+  const [videosTotal, setVideosTotal] = useState(0);
+  const [videosLoading, setVideosLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [videosError, setVideosError] = useState<string | null>(null);
+
+  const [notifVideos, setNotifVideos] = useState<Video[]>(EMPTY_VIDEOS);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifError, setNotifError] = useState<string | null>(null);
+  // Bumped on every bell-icon open so a stale response from an earlier,
+  // overlapping fetch (rapid open/close/open clicks) can be told apart from
+  // the request that actually matches the panel's current open state — see
+  // openNotifications below.
+  const notifRequestIdRef = useRef(0);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState<{ text: string; kind: "success" | "error" } | null>(null);
+  const [videosRefetchTick, setVideosRefetchTick] = useState(0);
+
+  // The sidebar's "Apify Usage" toggle — null until the first load resolves,
+  // so ToggleSwitch can stay disabled rather than flash a wrong default.
+  // Also updated directly by handleToggleInstagramScraping below (from the
+  // toggle's own mutation call, not a refetch), hence useAsync's setData
+  // escape hatch here rather than just its data/reload.
+  const scraperSettingsAsync = useAsync(fetchScraperSettings, [], null as ScraperSettings | null);
+  const scraperSettings = scraperSettingsAsync.data;
+  const setScraperSettings = scraperSettingsAsync.setData;
+  const [togglingScraper, setTogglingScraper] = useState(false);
+
+  const refreshChannelsAndCohorts = useCallback(() => {
+    channelsAsync.reload();
+    cohortsAsync.reload();
+    systemStatusAsync.reload();
+    scraperSettingsAsync.reload();
+  }, [channelsAsync.reload, cohortsAsync.reload, systemStatusAsync.reload, scraperSettingsAsync.reload]);
+
+  const handleToggleInstagramScraping = useCallback(async () => {
+    if (!scraperSettings || togglingScraper) return;
+    const next = !scraperSettings.instagramScrapingEnabled;
+    setTogglingScraper(true);
+    try {
+      setScraperSettings(await setInstagramScrapingEnabled(next));
+    } catch {
+      // Leave the switch as-is on failure — the next refreshChannelsAndCohorts
+      // (initial load, or after a manual refresh) resyncs it from the server.
+    } finally {
+      setTogglingScraper(false);
+    }
+  }, [scraperSettings, togglingScraper]);
+
+  // "Refresh data" button in the top bar — see src/lib/api.ts's
+  // triggerManualScrape docstring for why this hits a different,
+  // cooldown-limited endpoint instead of the API-key-protected one the
+  // GitHub Actions schedule uses.
+  const handleManualRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshMessage(null);
+    try {
+      const result = await triggerManualScrape();
+      const totalVideos = result.runs.reduce((sum, r) => sum + r.videosUpserted, 0);
+      const failed = result.runs.filter(r => r.status === "failed");
+      const skippedInstagram = result.runs.some(r => r.platform === "instagram" && r.status === "skipped");
+      setRefreshMessage(
+        failed.length > 0
+          ? { text: failed[0].errorMessage ?? "Refresh finished with errors.", kind: "error" }
+          : {
+              text: `Refreshed — ${totalVideos} video${totalVideos === 1 ? "" : "s"} updated.${skippedInstagram ? " Instagram paused." : ""}`,
+              kind: "success",
+            },
+      );
+      refreshChannelsAndCohorts();
+      setVideosRefetchTick(t => t + 1);
+    } catch (err) {
+      setRefreshMessage({
+        text: err instanceof ApiError ? err.message : "Could not start a refresh.",
+        kind: "error",
+      });
+    } finally {
+      setRefreshing(false);
+      window.setTimeout(() => setRefreshMessage(null), 6000);
+    }
+  }, [refreshing, refreshChannelsAndCohorts]);
+
+  // No separate "initial load" effect needed here — each of the four
+  // useAsync hooks above (channelsAsync/cohortsAsync/systemStatusAsync/
+  // scraperSettingsAsync) already fetches once on mount by itself.
+  // refreshChannelsAndCohorts is for the explicit re-fetch paths: the
+  // manual refresh button and CompetitorRoster's onChanged below.
+
+  // Re-fetch videos whenever a filter changes. Debounced so typing in the
+  // "min views" box doesn't fire a request per keystroke — filtering now
+  // happens server-side (see backend/app/routers/videos.py) rather than in
+  // a client-side useMemo, since it needs to scale past a hardcoded array.
+  useEffect(() => {
+    let cancelled = false;
+    // AbortController, in addition to the `cancelled` flag below: `cancelled`
+    // only stops a superseded response from being *applied*, but the request
+    // it came from still ran to completion on the backend regardless (three
+    // separate DB queries per app/routers/videos.py). Aborting the underlying
+    // fetch means a filter change that lands after this request has already
+    // started (the 300ms debounce below has already elapsed) actually cancels
+    // that in-flight request instead of just discarding its result.
+    const controller = new AbortController();
+    setVideosLoading(true);
+    setVideosError(null);
+    const handle = window.setTimeout(() => {
+      fetchVideos(
+        {
+          platform: filters.platform,
+          channels: filters.channels,
+          dateFrom: filters.dateFrom,
+          dateTo: filters.dateTo,
+          viewsThreshold: filters.viewsThreshold,
+          format: filters.format,
+          sortBy: filters.sortBy,
+          metric: filters.metric,
+          hasSponsor: filters.sponsoredOnly ? true : undefined,
+          limit: VIDEOS_PAGE_SIZE,
+          offset: 0,
+        },
+        { signal: controller.signal },
+      )
+        .then(result => {
+          // Same stale-response guard ChannelStatCard's velocity fetch
+          // already uses: without it, two filter changes fired less than
+          // 300ms apart can have their responses arrive out of order and
+          // the older one would silently overwrite the newer one's results.
+          if (cancelled) return;
+          setVideos(result.videos);
+          setVideosTotal(result.total);
+          setVideosLoading(false);
+        })
+        .catch(err => {
+          if (cancelled) return;
+          setVideosError(err instanceof ApiError ? err.message : "Could not load videos.");
+          setVideosLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+      controller.abort();
+    };
+  }, [filters, videosRefetchTick]);
+
+  // "Load more" button below the grid — fetches the next VIDEOS_PAGE_SIZE
+  // videos at the current offset (videos.length) and appends rather than
+  // replaces. Uses the same filters as the main fetch above so the next
+  // page honors whatever's currently selected.
+  const handleLoadMore = useCallback(() => {
+    if (loadingMore || videosLoading || videos.length >= videosTotal) return;
+    setLoadingMore(true);
+    fetchVideos({
+      platform: filters.platform,
+      channels: filters.channels,
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo,
+      viewsThreshold: filters.viewsThreshold,
+      format: filters.format,
+      sortBy: filters.sortBy,
+      metric: filters.metric,
+      hasSponsor: filters.sponsoredOnly ? true : undefined,
+      limit: VIDEOS_PAGE_SIZE,
+      offset: videos.length,
+    })
+      .then(result => {
+        setVideos(prev => [...prev, ...result.videos]);
+        setVideosTotal(result.total);
+        setLoadingMore(false);
+      })
+      .catch(err => {
+        setVideosError(err instanceof ApiError ? err.message : "Could not load more videos.");
+        setLoadingMore(false);
+      });
+  }, [filters, videos.length, videosTotal, loadingMore, videosLoading]);
+
+  // Backs the channel strip under the Overperformance page's filter bar: the
+  // explicitly selected channels when the "Channels" filter is narrowed,
+  // otherwise whichever tracked channels actually have a video in the
+  // current (filtered) results — so the strip always matches what's in the
+  // grid below it rather than dumping every tracked channel onto the page.
+  const visibleChannels = useMemo(() => {
+    if (filters.channels.length > 0) {
+      const selected = new Set(filters.channels);
+      return channels.filter(c => selected.has(c.id));
+    }
+    const shownIds = new Set(videos.map(v => v.channelId));
+    return channels.filter(c => shownIds.has(c.id));
+  }, [channels, filters.channels, videos]);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  // Rapid clicks on the bell (close it, reopen it before the first fetch
+  // has resolved), or the panel's own "Retry" button firing a second request
+  // while the first is still in flight, used to fire overlapping requests
+  // with no way to tell which one should actually win — whichever happened
+  // to resolve last would overwrite the panel's state, even if it was the
+  // older of the two. Stamping each fetch with an incrementing id and only
+  // applying the response that still matches the latest id makes a stale
+  // response a no-op instead of a flicker/race.
+  function fetchNotifications() {
+    const requestId = ++notifRequestIdRef.current;
+    setNotifLoading(true);
+    setNotifError(null);
+    // metric: "median" matches the Overperformance page's default (see
+    // the initial filters.metric below) and app/routers/system.py's
+    // overperformCount, so the bell shows the same videos the badge
+    // count is counting rather than silently falling back to average.
+    fetchVideos({ platform: "all", channels: [], dateFrom: "", dateTo: "", viewsThreshold: "", format: "all", sortBy: "ratio", metric: "median", limit: 50 })
+      .then(result => {
+        if (notifRequestIdRef.current !== requestId) return;
+        setNotifVideos(result.videos.filter(v => v.overperformRatioMedian != null && v.overperformRatioMedian >= 2));
+        setNotifLoading(false);
+      })
+      .catch(err => {
+        if (notifRequestIdRef.current !== requestId) return;
+        setNotifError(err instanceof ApiError ? err.message : "Could not load this.");
+        setNotifLoading(false);
+      });
+  }
+
+  function openNotifications() {
+    setNotifOpen(o => {
+      const next = !o;
+      if (next) fetchNotifications();
+      return next;
+    });
+  }
+
+  return (
+    <div className="flex h-full overflow-hidden" style={{ background: "var(--bg-base)", fontFamily: "Lora, serif" }}>
+      <Sidebar
+        open={sidebarOpen}
+        activeSection={activeSection}
+        setActiveSection={setActiveSection}
+        overperformBadge={systemStatus?.overperformCount ?? null}
+        cohorts={cohorts}
+        cohortsError={cohortsAsync.error}
+        onRetryCohorts={cohortsAsync.reload}
+        quotaPct={systemStatus?.youtubeQuotaPct ?? null}
+        quotaError={systemStatusAsync.error}
+        onRetryQuota={systemStatusAsync.reload}
+        instagramScrapingEnabled={scraperSettings?.instagramScrapingEnabled ?? null}
+        onToggleInstagramScraping={handleToggleInstagramScraping}
+        togglingScraper={togglingScraper}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+      />
+
+      {/* Main */}
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+
+        {/* Top Bar */}
+        <header className="flex items-center justify-between px-5 py-3 shrink-0" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setSidebarOpen(o => !o)}
+              aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+              className="flex items-center justify-center rounded-lg size-8 transition-colors hover-surface"
+              style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}>
+              <MenuIcon />
+            </button>
+            <button onClick={() => { setActiveSection("Overperformance"); setFilters(getDefaultFilters()); setViewMode("grid"); }}
+              title="Home — back to Overperformance with every filter cleared"
+              aria-label="Home — back to Overperformance with every filter cleared"
+              className="flex items-center justify-center rounded-lg size-8 transition-colors hover-surface"
+              style={{
+                color: activeSection === "Overperformance" ? "var(--accent-light)" : "var(--text-muted)",
+                border: `1px solid ${activeSection === "Overperformance" ? "var(--accent)" : "var(--border)"}`,
+              }}>
+              <HomeIcon />
+            </button>
+            <div>
+              <h1 className="text-sm font-bold leading-none" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>
+                {activeSection}
+              </h1>
+              <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+                Competitor video intelligence · {currentMonthLabel()}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Active filters summary */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {filters.platform !== "all" && (
+                <span className="filter-chip active">
+                  {filters.platform === "youtube" ? <YTIcon size={10} /> : <IGIcon size={10} />}
+                  {filters.platform}
+                  <button
+                    className="p-1 -m-1"
+                    aria-label="Clear platform filter"
+                    onClick={() => setFilters({ ...filters, platform: "all", format: nextFormatForPlatform(filters.format, "all") })}
+                  ><XIcon /></button>
+                </span>
+              )}
+              {filters.channels.length > 0 && (
+                <span className="filter-chip active">
+                  {filters.channels.length} ch
+                  <button className="p-1 -m-1" aria-label="Clear channel filter" onClick={() => setFilters({ ...filters, channels: [] })}><XIcon /></button>
+                </span>
+              )}
+              {filters.viewsThreshold && (
+                <span className="filter-chip active">
+                  ≥{fmtViews(Number(filters.viewsThreshold))}
+                  <button className="p-1 -m-1" aria-label="Clear minimum views filter" onClick={() => setFilters({ ...filters, viewsThreshold: "" })}><XIcon /></button>
+                </span>
+              )}
+            </div>
+
+            {/* Refresh data */}
+            <div className="relative flex items-center gap-2">
+              {refreshMessage && (
+                <span
+                  className="text-[11px] px-2 py-1 rounded-md whitespace-nowrap"
+                  style={{
+                    color: refreshMessage.kind === "success" ? "var(--accent-light)" : "var(--tier-danger)",
+                    background: "var(--bg-base)",
+                    border: `1px solid ${refreshMessage.kind === "success" ? "var(--accent)" : "var(--tier-danger)"}`,
+                  }}
+                >
+                  {refreshMessage.text}
+                </span>
+              )}
+              <button
+                onClick={handleManualRefresh}
+                disabled={refreshing}
+                title={
+                  systemStatus?.lastScrapeStartedAt
+                    ? `Last refreshed ${fmtRelativeTime(systemStatus.lastScrapeStartedAt)}`
+                    : "Fetch the latest videos right now"
+                }
+                className="flex items-center gap-1.5 rounded-lg h-9 px-3 transition-colors hover-surface disabled:opacity-50"
+                style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+              >
+                <span className={refreshing ? "animate-spin" : undefined}><RefreshIcon /></span>
+                <span className="text-xs" style={{ fontFamily: "Lora, serif" }}>
+                  {refreshing ? "Refreshing…" : "Refresh data"}
+                </span>
+              </button>
+              {!refreshing && systemStatus?.lastScrapeStartedAt && (
+                <span className="text-[10px] hidden sm:inline" style={{ color: "var(--text-muted)" }}>
+                  Updated {fmtRelativeTime(systemStatus.lastScrapeStartedAt)}
+                </span>
+              )}
+            </div>
+
+            {/* Notification bell */}
+            <div className="relative" ref={notifRef}>
+              <button onClick={openNotifications}
+                aria-label="Performance overview notifications"
+                className="flex items-center justify-center rounded-lg size-9 transition-colors hover-surface"
+                style={{ color: notifOpen ? "var(--accent-light)" : "var(--text-muted)", border: `1px solid ${notifOpen ? "var(--accent)" : "var(--border)"}` }}>
+                <BellIcon />
+                <span className="notification-dot" />
+              </button>
+              {notifOpen && <NotificationPanel videos={notifVideos} loading={notifLoading} error={notifError} onClose={() => setNotifOpen(false)} onRetry={fetchNotifications} />}
+            </div>
+          </div>
+        </header>
+
+        <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        {activeSection === "Add Channel" ? (
+          <div className="flex-1 overflow-y-auto">
+            <CompetitorRoster
+              channels={channels}
+              onChanged={refreshChannelsAndCohorts}
+              loading={channelsAsync.loading}
+              error={channelsAsync.error}
+              onRetry={channelsAsync.reload}
+            />
+          </div>
+        ) : activeSection === "Trend Analysis" ? (
+          <TopicSearchView
+            quotaBudget={systemStatus?.youtubeQuotaBudget ?? null}
+            quotaUsedToday={systemStatus?.youtubeQuotaUsedToday ?? null}
+          />
+        ) : (
+          <>
+            {/* Filter Bar */}
+            <FilterBar filters={filters} setFilters={setFilters} viewMode={viewMode} setViewMode={setViewMode} shownCount={videos.length} totalResults={videosTotal} channels={channels} />
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto">
+              {visibleChannels.length > 0 && (
+                <div className="px-5 pt-4 pb-1 flex items-stretch gap-3 overflow-x-auto">
+                  {visibleChannels.map(c => (
+                    <ChannelStatCard
+                      key={c.id}
+                      channel={c}
+                      active={filters.channels.length === 1 && filters.channels[0] === c.id}
+                      onClick={() => setFilters({ ...filters, channels: [c.id] })}
+                      onClear={() => setFilters({ ...filters, channels: filters.channels.filter(id => id !== c.id) })}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {filters.showChart && <ChartPanel videos={videos} metric={filters.metric} />}
+
+              {videosError ? (
+                <div className="flex flex-col items-center justify-center h-64" style={{ color: "var(--text-muted)" }}>
+                  <div className="text-4xl mb-3">⚠️</div>
+                  <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>Couldn't load videos</div>
+                  <div className="text-xs mt-1">{videosError}</div>
+                  <button
+                    onClick={() => setVideosRefetchTick(t => t + 1)}
+                    className="mt-3 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : videosLoading ? (
+                viewMode === "grid" ? (
+                  <div className="p-5 grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+                    {SKELETON_KEYS.map(k => <VideoCardSkeleton key={k} mode="grid" />)}
+                  </div>
+                ) : (
+                  <div className="p-5 flex flex-col gap-2">
+                    {SKELETON_KEYS.map(k => <VideoCardSkeleton key={k} mode="list" />)}
+                  </div>
+                )
+              ) : videos.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64" style={{ color: "var(--text-muted)" }}>
+                  <div className="text-4xl mb-3">📭</div>
+                  <div className="text-sm" style={{ fontFamily: "Lora, serif" }}>No videos match your filters</div>
+                  <div className="text-xs mt-1">
+                    {channels.length === 0
+                      ? "Add a channel in Add Channel to get started."
+                      : "Try adjusting the date range or views threshold."}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {viewMode === "grid" ? (
+                    <div className="p-5 grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+                      {videos.map(v => <VideoCard key={v.id} video={v} mode="grid" metric={filters.metric} />)}
+                    </div>
+                  ) : (
+                    <div className="p-5 flex flex-col gap-2">
+                      {videos.map(v => <VideoCard key={v.id} video={v} mode="list" metric={filters.metric} />)}
+                    </div>
+                  )}
+                  {videos.length < videosTotal && (
+                    <div className="flex flex-col items-center gap-2 pb-8">
+                      <button
+                        onClick={handleLoadMore}
+                        disabled={loadingMore}
+                        className="px-4 py-2 rounded-lg text-xs font-semibold transition-opacity"
+                        style={{
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border)",
+                          color: "var(--text-secondary)",
+                          fontFamily: "Inter, sans-serif",
+                          opacity: loadingMore ? 0.6 : 1,
+                          cursor: loadingMore ? "default" : "pointer",
+                        }}>
+                        {loadingMore ? "Loading…" : `Load more (${videosTotal - videos.length} remaining)`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        )}
+        </main>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,5 @@
+[
+  { "url": "techwiser.com", "name": "TechWiser", "is_own_site": true },
+  { "url": "example-competitor-1.com", "cohort": "Tech news" },
+  { "url": "example-competitor-2.com", "cohort": "Tech news" }
+]

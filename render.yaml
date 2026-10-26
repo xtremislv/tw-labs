@@ -1,0 +1,66 @@
+# Render Blueprint for TW-Labs Web Intel (backend + database).
+# Render dashboard → New → Blueprint → pick this repo. See DEPLOYMENT.md.
+#
+# Creates, in Singapore (closest Render region to India):
+#   webintel-api  Python web service, paid instance (free instances sleep after
+#                 15 min, which would stop the 15-minute polling). Runs the API
+#                 AND the tracker worker in one process (EMBEDDED_WORKER=true).
+#   webintel-db   Render Postgres, private network only (ipAllowList: []).
+services:
+  - type: web
+    name: webintel-api
+    runtime: python
+    region: singapore
+    plan: 0.5c-512mb
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Runs before each deploy goes live; a failed migration stops the deploy.
+    preDeployCommand: alembic upgrade head
+    # ONE uvicorn worker: the embedded scheduler must run exactly once.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11
+      - key: DATABASE_URL
+        fromDatabase:
+          name: webintel-db
+          property: connectionString
+      # No login: the dashboard is open to anyone with the link (team choice).
+      # To switch a login on later, add DASHBOARD_PASSWORD (and SESSION_SECRET)
+      # in Render → webintel-api → Environment; no code change needed.
+      - key: EMBEDDED_WORKER
+        value: "true"
+      - key: WORKSPACE_NAME
+        value: TechWiser Web Competitors
+      - key: CORS_ORIGINS
+        sync: false            # optional; only needed if you skip the Vercel /api proxy
+
+  # Option B — a separate always-on worker instead of EMBEDDED_WORKER.
+  # Costs a second paid instance. To use it: uncomment, and set
+  # EMBEDDED_WORKER to "false" on webintel-api above.
+  # - type: worker
+  #   name: webintel-worker
+  #   runtime: python
+  #   region: singapore
+  #   plan: 0.5c-512mb
+  #   rootDir: backend
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: python -m app.worker
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: 3.12.11
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: webintel-db
+  #         property: connectionString
+
+databases:
+  - name: webintel-db
+    databaseName: webintel
+    user: webintel
+    region: singapore
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    ipAllowList: []            # only Render services can connect; add your IP to connect from a laptop
