@@ -18,7 +18,16 @@ from ..timeutil import utcnow
 
 router = APIRouter(prefix="/api", tags=["articles"])
 
-VISIBLE = ("ok", "pending", "recheck")
+VISIBLE = ("ok", "pending", "recheck", "error")
+
+
+def _visible():
+    """Everything a feed or sitemap listed. 'error' = the page couldn't be
+    read (blocked, timeout) — still a real article, shown with its slug title.
+    'skipped' (too little text) is hidden only for homepage-scan finds, which
+    can be non-article pages; anything a feed or sitemap listed is a post."""
+    return or_(Article.enrich_status.in_(VISIBLE),
+               and_(Article.enrich_status == "skipped", Article.discovered_via != "html"))
 IST = timezone(timedelta(hours=5, minutes=30))
 _STOP = set(
     "a an and are as at be by for from has have how in is it its new of on or the this to vs with what why "
@@ -48,7 +57,7 @@ def _filtered(
     has_youtube: bool,
     has_affiliate: bool,
 ):
-    stmt = select(Article).join(Site).where(Article.enrich_status.in_(VISIBLE), Article.title.is_not(None))
+    stmt = select(Article).join(Site).where(_visible(), Article.title.is_not(None))
     if sites:
         ids = [int(x) for x in sites.split(",") if x.strip().isdigit()]
         if ids:

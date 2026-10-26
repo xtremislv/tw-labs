@@ -211,7 +211,7 @@ def build_stories(db: Session, *, hours: int = 48, min_sites: int = 2, cohort: s
         .join(Site)
         .options(selectinload(Article.site))
         .where(
-            Article.enrich_status.in_(("ok", "pending", "recheck")),
+            Article.enrich_status.in_(("ok", "pending", "recheck", "error")),
             Article.title.is_not(None),
             or_(Article.published_at >= since, Article.first_seen_at >= since),
             Site.paused.is_(False),

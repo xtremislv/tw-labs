@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, type Health, type Site, type SiteDetail } from "../lib/api";
+import { api, ApiError, type Health, type Site, type SiteDetail, type SitemapCheck } from "../lib/api";
 import { SOURCE_LABEL, fmtDateTime, fmtRelative } from "../lib/format";
 import { useAsync } from "../hooks/useAsync";
 import { ChevronDown, PauseIcon, PlayIcon, PlusIcon, RefreshIcon, TrashIcon } from "../components/icons";
@@ -150,6 +150,48 @@ function SiteRowDetail({ siteId }: { siteId: number }) {
   );
 }
 
+function SitemapCheckPanel({ siteId }: { siteId: number }) {
+  const [res, setRes] = useState<SitemapCheck | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setErr(null);
+    try { setRes(await api.sitemapCheck(siteId)); } catch (e) { setErr(e instanceof Error ? e.message : "Check failed"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="px-4 pb-4 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <button onClick={run} disabled={busy} className="filter-chip">{busy ? "Reading sitemaps… (up to a minute)" : "Check today's sitemaps"}</button>
+        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>Reads every sitemap updated on the latest date, adds anything missing and shows what's covered.</span>
+      </div>
+      {err && <div className="text-[11px]" style={{ color: "var(--tier-danger)" }}>{err}</div>}
+      {res && (
+        <div className="rounded-lg p-3 text-[11px] flex flex-col gap-2" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
+          {res.error ? <div style={{ color: "var(--tier-danger)" }}>{res.error}</div> : (
+            <>
+              <div className="font-mono" style={{ color: "var(--text-muted)" }}>{res.index_url} · latest date {res.latest_day ?? "—"} · {res.added_now ?? 0} added just now</div>
+              {res.children.map(c => (
+                <div key={c.url} className="flex flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2 font-mono">
+                    <a href={c.url} target="_blank" rel="noreferrer" className="hover:underline" style={{ color: "var(--accent-light)" }}>{c.url.split("/").pop()}</a>
+                    {c.error ? <span style={{ color: "var(--tier-danger)" }}>{c.error}</span> : (
+                      <span>{c.urls} URLs · {c.latest_day_urls} dated {c.day} · <b style={{ color: c.visible === c.latest_day_urls ? "var(--success)" : "var(--warning)" }}>{c.visible}/{c.latest_day_urls} in the feed</b></span>
+                    )}
+                  </div>
+                  {c.missing.map(m => (
+                    <div key={m.url} className="pl-3 font-mono truncate" style={{ color: "var(--text-muted)" }} title={m.url}>✗ {m.url.replace(/^https?:\/\/[^/]+/, "")} — {m.reason}</div>
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SiteRow({ site, onChanged, onShowFeed }: { site: Site; onChanged: () => void; onShowFeed: (id: number) => void }) {
   const [open, setOpen] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -235,6 +277,7 @@ function SiteRow({ site, onChanged, onShowFeed }: { site: Site; onChanged: () =>
             <button onClick={() => act(() => api.rediscover(site.id), "Re-scanning feeds…")} className="filter-chip">Re-scan feeds</button>
             <button onClick={() => act(() => api.updateSite(site.id, { is_own_site: !site.is_own_site }), "Saved")} className="filter-chip">{site.is_own_site ? "Unmark as our site" : "Mark as our site"}</button>
           </div>
+          <SitemapCheckPanel siteId={site.id} />
           <SiteRowDetail siteId={site.id} />
         </div>
       )}

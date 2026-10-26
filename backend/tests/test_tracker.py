@@ -198,3 +198,34 @@ def test_poll_catches_todays_custom_post_type_via_sitemap(db):
     assert run2.items_new == 0
     assert len([u for u in fs.requests if u.endswith("reviews-sitemap.xml")]) == n_before
     assert "unchanged" in run2.detail
+
+
+def test_slug_title():
+    assert tracker.slug_title("https://x.com/best-phones-under-30000-in-india/") == "Best phones under 30000 in india"
+    assert tracker.slug_title("https://x.com/news/pixel-11-launch-123456") == "Pixel 11 launch"
+    assert tracker.slug_title("https://x.com/") is None
+
+
+def test_sitemap_articles_visible_before_enrichment_and_coverage_report(db, client):
+    fs = FakeSite()
+    f = fs.fetcher()
+    site = _site(db, fs)
+    tracker.rediscover(db, f, site)
+    tracker.backfill_site(db, f, site)
+    tracker.enrich_pending(db, f, limit=100)
+    fs.publish("nothing-phone-4-review-verdict", "Nothing Phone 4 review: verdict", cpt=True)
+    tracker.poll_site(db, f, site)  # no enrichment yet
+    items = client.get("/api/articles", params={"q": "nothing"}).json()["items"]
+    assert len(items) == 1 and items[0]["title"] == "Nothing phone 4 review verdict" and items[0]["published_at"]
+    # page can't be read → still in the feed
+    a = db.scalar(select(Article).where(Article.url.like("%nothing-phone-4%")))
+    a.enrich_status, a.last_error = "error", "HTTP 403"
+    db.commit()
+    assert client.get("/api/articles", params={"q": "nothing"}).json()["total"] == 1
+    # coverage report: today's children, everything dated today is in the feed
+    fs.publish("vivo-x300-ultra-teased-india", "Vivo X300 Ultra teased for India", cpt=True)
+    rep = tracker.sitemap_coverage(db, f, site)
+    names = {c["url"].rsplit("/", 1)[-1]: c for c in rep["children"]}
+    assert "reviews-sitemap.xml" in names and "category-sitemap.xml" not in names
+    rv = names["reviews-sitemap.xml"]
+    assert rep["added_now"] >= 1 and rv["latest_day_urls"] == 2 and rv["visible"] == 2 and not rv["missing"]

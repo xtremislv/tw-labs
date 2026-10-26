@@ -14,6 +14,8 @@ enrich_pending()  fetch + parse queued articles; on a recheck, compare with
 from __future__ import annotations
 
 import logging
+import re
+from urllib.parse import urlsplit
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -142,6 +144,20 @@ def _fetch_source(db: Session, fetcher: Fetcher, src: SiteSource, site: Site) ->
 
 
 # ── ingest ─────────────────────────────────────────────────────────────────
+def slug_title(url: str) -> str | None:
+    """'https://x.com/best-phones-under-30000/' → 'Best phones under 30000'."""
+    segs = [p for p in urlsplit(url).path.split("/") if p]
+    if not segs:
+        return None
+    words = re.sub(r"\.(html?|php)$", "", segs[-1]).replace("_", "-").split("-")
+    words = [w for w in words if w]
+    if words and re.fullmatch(r"\d{5,}", words[-1]):
+        words = words[:-1]  # trailing numeric post id
+    text = " ".join(words).strip()
+    return (text[:1].upper() + text[1:]) if text else None
+
+
+
 def ingest(db: Session, site: Site, candidates: list[Candidate], *, backfill: bool) -> tuple[int, int]:
     """Upsert candidates. Returns (new_articles, rechecks_scheduled)."""
     s = get_settings()
@@ -176,14 +192,18 @@ def ingest(db: Session, site: Site, candidates: list[Candidate], *, backfill: bo
             when = as_utc(c.published) or lastmod
             if when is not None and when < cutoff:
                 continue  # older than the tracking window — not our concern
+            # Sitemap entries carry no title or publish date; use the slug and
+            # <lastmod> until the page is read, so the article is visible in
+            # the feed right away (and stays visible if the page can't be read).
+            prov_pub = as_utc(c.published) or (lastmod if c.kind == "sitemap" else None)
             art = Article(
                 site_id=site.id,
                 url=canon,
-                title=c.title,
-                published_at=as_utc(c.published),
+                title=c.title or slug_title(canon),
+                published_at=prov_pub,
                 source_lastmod=lastmod,
                 first_seen_at=now,
-                activity_at=as_utc(c.published) or now,
+                activity_at=prov_pub or now,
                 is_backfill=backfill,
                 discovered_via=c.kind,
                 enrich_status="pending",
@@ -268,6 +288,74 @@ def ingest_sitemap_candidates(db: Session, site: Site, cands: list[Candidate]) -
     n1, r1 = ingest(db, site, fresh, backfill=False)
     n2, r2 = ingest(db, site, old, backfill=True)
     return n1 + n2, r1 + r2
+
+
+def sitemap_coverage(db: Session, fetcher: Fetcher, site: Site) -> dict:
+    """Diagnose (and fix) one site: read every child sitemap carrying the
+    index's latest date, ingest anything missing, and report per child how
+    many of its latest-date URLs are tracked and visible."""
+    srcs = [x for x in site.sources if x.enabled and x.kind == "sitemap"]
+    if not srcs:
+        return {"index_url": None, "error": "No sitemap found for this site — try “Re-scan feeds”.", "children": []}
+    src = srcs[0]
+    r = fetcher.get(src.url)
+    if not r.ok:
+        return {"index_url": src.url, "error": f"Sitemap returned HTTP {r.status}", "children": []}
+    doc = parse_sitemap(r.content or r.text)
+    if not doc.is_index:
+        children = [(None, doc)]
+        latest_day = None
+    else:
+        chosen = latest_date_children(doc.children, tz=IST, limit=get_settings().latest_sitemaps_max_children)
+        latest = max((c.lastmod for c in chosen if c.lastmod), default=None)
+        latest_day = latest.astimezone(IST).date() if latest else None
+        children = []
+        for c in chosen:
+            try:
+                cr = fetcher.get(c.url)
+                children.append((c, parse_sitemap(cr.content or cr.text) if cr.ok else None))
+            except Exception:  # noqa: BLE001
+                children.append((c, None))
+    out = []
+    all_cands: list[Candidate] = []
+    for entry, cdoc in children:
+        row = {"url": entry.url if entry else src.url, "lastmod": entry.lastmod.isoformat() if entry and entry.lastmod else None,
+               "urls": 0, "latest_day_urls": 0, "tracked": 0, "visible": 0, "missing": []}
+        if cdoc is None or cdoc.is_index:
+            row["error"] = "couldn't read this sitemap" if cdoc is None else "nested index (read by the poll)"
+            out.append(row)
+            continue
+        all_cands += cdoc.urls
+        day = latest_day or max((u.lastmod for u in cdoc.urls if u.lastmod), default=utcnow()).astimezone(IST).date()
+        todays = [u for u in cdoc.urls if u.lastmod and u.lastmod.astimezone(IST).date() == day]
+        row["urls"], row["latest_day_urls"], row["day"] = len(cdoc.urls), len(todays), day.isoformat()
+        out.append((row, todays))
+    # ingest first, so the report shows the state after the fix
+    new, _ = ingest_sitemap_candidates(db, site, all_cands)
+    final = []
+    from .routers.articles import VISIBLE  # noqa: PLC0415 - avoid an import cycle at module load
+    for item in out:
+        if isinstance(item, dict):
+            final.append(item)
+            continue
+        row, todays = item
+        canon = {canonicalize(u.url): u.url for u in todays}
+        arts = {a.url: a for a in db.scalars(select(Article).where(Article.url.in_(list(canon) or [""])))}
+        for cu, raw in canon.items():
+            a = arts.get(cu)
+            if a is None:
+                reason = "not an article URL (filtered)" if not looks_like_article(cu, site.domain) else "older than the tracking window"
+                row["missing"].append({"url": raw, "reason": reason})
+                continue
+            row["tracked"] += 1
+            vis = a.title and (a.enrich_status in VISIBLE or (a.enrich_status == "skipped" and a.discovered_via != "html"))
+            if vis:
+                row["visible"] += 1
+            else:
+                row["missing"].append({"url": raw, "reason": f"{a.enrich_status}: {a.last_error or ''}".strip(": ")})
+        row["missing"] = row["missing"][:40]
+        final.append(row)
+    return {"index_url": src.url, "latest_day": latest_day.isoformat() if latest_day else None, "added_now": new, "children": final}
 
 
 # ── poll + sweep ───────────────────────────────────────────────────────────

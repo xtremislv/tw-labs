@@ -221,6 +221,14 @@ export function articleQueryString(q: ArticleQuery): string {
   return p.toString();
 }
 
+export interface SitemapCheck {
+  index_url: string | null;
+  error?: string;
+  latest_day?: string | null;
+  added_now?: number;
+  children: { url: string; lastmod: string | null; urls: number; latest_day_urls: number; tracked: number; visible: number; day?: string; error?: string; missing: { url: string; reason: string }[] }[];
+}
+
 // ── YouTube (Phase 3) ──────────────────────────────────────────────────────
 export interface Channel {
   id: number;
@@ -442,6 +450,7 @@ export const api = {
     request<Site>(`/api/sites/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteSite: (id: number) => request<void>(`/api/sites/${id}`, { method: "DELETE" }),
   rediscover: (id: number) => request<{ queued: boolean }>(`/api/sites/${id}/rediscover`, { method: "POST" }),
+  sitemapCheck: (id: number) => request<SitemapCheck>(`/api/sites/${id}/sitemap-check`, { method: "POST" }),
   pollSite: (id: number) => request<{ queued: boolean }>(`/api/sites/${id}/poll`, { method: "POST" }),
   articles: (q: ArticleQuery) => request<ArticlePage>(`/api/articles?${articleQueryString(q)}`),
   article: (id: number) => request<ArticleDetail>(`/api/articles/${id}`),

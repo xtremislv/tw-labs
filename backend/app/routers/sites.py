@@ -35,7 +35,7 @@ def _health(site: Site) -> str:
 def _stats(db: Session) -> dict[int, dict]:
     now = utcnow()
     d1, d7 = now - timedelta(days=1), now - timedelta(days=7)
-    live = Article.enrich_status.in_(("ok", "pending", "recheck"))
+    live = Article.enrich_status.in_(("ok", "pending", "recheck", "error"))
     out: dict[int, dict] = {}
     def count(cond):
         return func.sum(case((cond, 1), else_=0))
@@ -161,3 +161,16 @@ def poll_now(site_id: int, db: Session = Depends(get_db)):
     db.add(JobRequest(kind="poll_site", site_id=site_id))
     db.commit()
     return {"queued": True}
+
+
+@router.post("/{site_id}/sitemap-check")
+def sitemap_check(site_id: int, db: Session = Depends(get_db)):
+    """Read today's sitemaps right now, add anything missing, and report coverage."""
+    from ..fetcher import Fetcher
+    from ..tracker import sitemap_coverage
+
+    site = _get(db, site_id)
+    try:
+        return sitemap_coverage(db, Fetcher(), site)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"{type(e).__name__}: {e}") from e
