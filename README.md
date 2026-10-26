@@ -53,9 +53,9 @@ Open **http://localhost:8443**, go to **Sources** and add your first site. Mark 
 
 To add many sites at once, edit `backend/sites.example.json` and run `python scripts\add_sites.py sites.example.json`.
 
-## Deploy to production (Vercel + Render)
+## Deploy to production (free: Render + Supabase)
 
-`render.yaml` (backend + Postgres on Render, Singapore) and `vercel.json` (dashboard on Vercel, proxying `/api` to Render) are ready. Follow **DEPLOYMENT.md**. There's no login by default (the link is shared only within the team); setting `DASHBOARD_PASSWORD` on Render switches a team-password login on.
+`render.yaml` deploys everything on Render's free plan: the API + tracker as a free web service, and the dashboard as a free static site that forwards `/api` to it. The database is a free Supabase project. A free cron-job.org ping keeps the API awake. Follow **DEPLOYMENT.md**. There is no login by default; setting `DASHBOARD_PASSWORD` turns one on. `render.paid.yaml` (about $13/month, always on, Render Postgres) and `vercel.json` (Vercel Pro) are there for upgrading later.
 
 ## Run it on a server instead (Docker Compose)
 

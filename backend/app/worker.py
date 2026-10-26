@@ -77,6 +77,11 @@ def enrich() -> None:
             tracker.enrich_pending(db, _fetcher())
 
 
+def housekeeping() -> None:
+    with SessionLocal() as db:
+        tracker.housekeeping(db)
+
+
 def process_requests() -> None:
     heartbeat()
     with SessionLocal() as db:
@@ -120,6 +125,7 @@ def build_scheduler(cls: type[BaseScheduler]) -> BaseScheduler:
     sched.add_job(poll_all, "interval", minutes=s.fast_poll_minutes, id="poll")
     sched.add_job(sweep_all, "interval", minutes=s.sitemap_sweep_minutes, id="sweep")
     sched.add_job(enrich, "interval", minutes=s.enrich_minutes, id="enrich", next_run_time=utcnow())
+    sched.add_job(housekeeping, "interval", hours=24, id="housekeeping")
     return sched
 
 

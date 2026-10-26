@@ -111,3 +111,34 @@ def test_poll_falls_back_when_fast_source_breaks(db):
     assert run.ok and run.items_processed > 0  # fell back to the news sitemap
     wp = next(s for s in site.sources if s.kind == "wp_rest")
     assert wp.consecutive_errors == 1 and "404" in wp.last_error
+
+
+def test_housekeeping_drops_old_articles_and_logs(db, monkeypatch):
+    from datetime import timedelta
+
+    from app.config import get_settings
+    from app.models import JobRun
+    from app.timeutil import utcnow
+
+    fs = FakeSite()
+    f = fs.fetcher()
+    site = _site(db, fs)
+    tracker.rediscover(db, f, site)
+    tracker.backfill_site(db, f, site)
+    tracker.enrich_pending(db, f)
+    old = db.scalar(select(Article).where(Article.url.like("%wifi%")))  # 10 days old
+    db.add(ArticleVersion(article_id=old.id, summary="x"))
+    db.add(JobRun(job="poll", started_at=utcnow() - timedelta(days=60)))
+    db.commit()
+
+    monkeypatch.setenv("RETENTION_DAYS", "7")
+    get_settings.cache_clear()
+    try:
+        run = tracker.housekeeping(db)
+    finally:
+        get_settings.cache_clear()
+    assert run.items_processed == 1
+    assert db.scalar(select(Article).where(Article.url.like("%wifi%"))) is None
+    assert db.scalar(select(ArticleVersion).where(ArticleVersion.article_id == old.id)) is None
+    assert len(db.scalars(select(Article)).all()) == 3
+    assert db.scalar(select(JobRun).where(JobRun.job == "poll", JobRun.started_at < utcnow() - timedelta(days=59))) is None

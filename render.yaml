@@ -1,66 +1,78 @@
-# Render Blueprint for TW-Labs Web Intel (backend + database).
+# FREE Render Blueprint for TW-Labs Web Intel ($0/month).
 # Render dashboard → New → Blueprint → pick this repo. See DEPLOYMENT.md.
 #
-# Creates, in Singapore (closest Render region to India):
-#   webintel-api  Python web service, paid instance (free instances sleep after
-#                 15 min, which would stop the 15-minute polling). Runs the API
-#                 AND the tracker worker in one process (EMBEDDED_WORKER=true).
-#   webintel-db   Render Postgres, private network only (ipAllowList: []).
+#   webintel-api  Python web service on the FREE instance: runs the API and the
+#                 tracker worker in one process. Free instances sleep after 15
+#                 minutes without traffic, so a free pinger (cron-job.org) calls
+#                 /healthz every 10 minutes to keep it — and the tracker — awake.
+#   webintel      Free static site serving the dashboard and forwarding /api/*
+#                 to webintel-api (same domain, so no CORS setup).
+#   Database      NOT on Render (free Render Postgres is deleted after 30 days):
+#                 a free Supabase project. Paste its Session pooler URL as
+#                 DATABASE_URL when the Blueprint asks.
+#
+# The paid version (always-on, Render Postgres with backups) is render.paid.yaml.
 services:
   - type: web
     name: webintel-api
     runtime: python
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    # Runs before each deploy goes live; a failed migration stops the deploy.
-    preDeployCommand: alembic upgrade head
-    # ONE uvicorn worker: the embedded scheduler must run exactly once.
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips "*"
+    # Free instances have no pre-deploy step, so migrations run at start-up
+    # (a no-op when the database is already current).
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips "*"
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.11
       - key: DATABASE_URL
-        fromDatabase:
-          name: webintel-db
-          property: connectionString
-      # No login: the dashboard is open to anyone with the link (team choice).
-      # To switch a login on later, add DASHBOARD_PASSWORD (and SESSION_SECRET)
-      # in Render → webintel-api → Environment; no code change needed.
+        sync: false            # Supabase "Session pooler" URL — you paste it at creation
       - key: EMBEDDED_WORKER
         value: "true"
+      - key: RETENTION_DAYS
+        value: "180"           # keeps the 500 MB free database comfortably under its limit
+      - key: DB_POOL_SIZE
+        value: "3"             # Supabase's free shared pooler allows few connections
+      - key: DB_MAX_OVERFLOW
+        value: "2"
       - key: WORKSPACE_NAME
         value: TechWiser Web Competitors
-      - key: CORS_ORIGINS
-        sync: false            # optional; only needed if you skip the Vercel /api proxy
+      # No login (team choice). To add one later: DASHBOARD_PASSWORD + SESSION_SECRET.
 
-  # Option B — a separate always-on worker instead of EMBEDDED_WORKER.
-  # Costs a second paid instance. To use it: uncomment, and set
-  # EMBEDDED_WORKER to "false" on webintel-api above.
-  # - type: worker
-  #   name: webintel-worker
-  #   runtime: python
-  #   region: singapore
-  #   plan: 0.5c-512mb
-  #   rootDir: backend
-  #   buildCommand: pip install -r requirements.txt
-  #   startCommand: python -m app.worker
-  #   envVars:
-  #     - key: PYTHON_VERSION
-  #       value: 3.12.11
-  #     - key: DATABASE_URL
-  #       fromDatabase:
-  #         name: webintel-db
-  #         property: connectionString
-
-databases:
-  - name: webintel-db
-    databaseName: webintel
-    user: webintel
-    region: singapore
-    plan: 0.1c-256mb
-    postgresMajorVersion: "16"
-    ipAllowList: []            # only Render services can connect; add your IP to connect from a laptop
+  - type: web
+    name: webintel
+    runtime: static
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+    routes:
+      # Order matters: first match wins. Real files (JS/CSS/images) are always
+      # served before these rules.
+      - type: rewrite
+        source: /api/*
+        destination: https://webintel-api.onrender.com/api/*
+      - type: rewrite
+        source: /healthz
+        destination: https://webintel-api.onrender.com/healthz
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Robots-Tag
+        value: noindex, nofollow
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

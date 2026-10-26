@@ -18,14 +18,14 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import timedelta
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .discovery import PRIORITY, DiscoveryResult, discover
 from .extract import compare_versions, extract_page
 from .fetcher import FetchError, Fetcher
-from .models import Article, ArticleVersion, JobRun, Site, SiteSource
+from .models import Article, ArticleVersion, JobRequest, JobRun, Site, SiteSource
 from .parsers import (
     Candidate,
     choose_child_sitemaps,
@@ -437,4 +437,29 @@ def enrich_pending(db: Session, fetcher: Fetcher, *, limit: int | None = None, t
         run.items_processed = len(batch)
         run.items_new = counts["new"]
         run.items_updated = counts["updated"]
+    return run
+
+
+# ── housekeeping ───────────────────────────────────────────────────────────
+def housekeeping(db: Session, *, trigger: str = "schedule") -> JobRun:
+    """Keep the database small: drop old articles (RETENTION_DAYS) and old
+    job logs. Runs daily; essential on the 500 MB free Supabase database."""
+    s = get_settings()
+    now = utcnow()
+    with job_run(db, "housekeeping", trigger=trigger) as run:
+        removed = 0
+        if s.retention_days > 0:
+            cutoff = now - timedelta(days=s.retention_days)
+            last_activity = func.coalesce(Article.activity_at, Article.first_seen_at)
+            ids = list(db.scalars(select(Article.id).where(last_activity < cutoff)))
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                db.execute(delete(ArticleVersion).where(ArticleVersion.article_id.in_(chunk)))
+                db.execute(delete(Article).where(Article.id.in_(chunk)))
+            removed = len(ids)
+        log_cutoff = now - timedelta(days=s.job_log_retention_days)
+        db.execute(delete(JobRun).where(JobRun.started_at < log_cutoff, JobRun.job != "heartbeat"))
+        db.execute(delete(JobRequest).where(JobRequest.done_at.is_not(None), JobRequest.done_at < log_cutoff))
+        db.commit()
+        run.items_processed = removed
     return run

@@ -348,12 +348,23 @@ export default function App() {
     return () => window.removeEventListener("webintel:unauthorized", onUnauthorized);
   }, [check]);
 
+  // On Render's free plan the backend may be asleep: retry quietly every
+  // 10 s while it wakes (about a minute) instead of showing a dead end.
+  useEffect(() => {
+    if (!checkError) return;
+    const t = setInterval(check, 10_000);
+    return () => clearInterval(t);
+  }, [checkError, check]);
+
   if (checkError) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "var(--bg-base)", color: "var(--text-secondary)", fontFamily: "Inter, sans-serif" }}>
-        <div className="text-sm">{checkError}</div>
-        <div className="text-xs" style={{ color: "var(--text-muted)" }}>On Render's paid plan the server is always on; if it was just deployed, give it a minute.</div>
-        <button onClick={check} className="btn-primary text-sm px-4 py-2">Try again</button>
+        <span className="size-3 rounded-full animate-pulse" style={{ background: "var(--accent)" }} />
+        <div className="text-sm font-semibold" style={{ color: "var(--text-primary)", fontFamily: "Lora, serif" }}>Waking up the server…</div>
+        <div className="text-xs max-w-xs" style={{ color: "var(--text-muted)" }}>
+          On the free plan the backend can fall asleep; it takes about a minute to start. This page retries on its own.
+        </div>
+        <button onClick={check} className="filter-chip" style={{ padding: "6px 14px" }}>Try now</button>
       </div>
     );
   }

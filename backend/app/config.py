@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     enrich_minutes: int = 2
     job_request_poll_seconds: int = 20
 
+    # ── Storage housekeeping (daily) ──────────────────────────────────────
+    # Delete articles with no activity for this many days (0 = keep forever).
+    # The free Supabase database is 500 MB; ~180 days keeps 20 sites well
+    # inside it.
+    retention_days: int = 0
+    job_log_retention_days: int = 30
+
+    # ── Database connection pool ─────────────────────────────────────────
+    # Kept small: Supabase's free shared pooler allows few connections.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+
     # Cooldown for the dashboard's "Refresh now" button.
     manual_refresh_cooldown_seconds: int = 120
 

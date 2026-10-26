@@ -10,6 +10,9 @@ class Base(DeclarativeBase):
 
 def _make_engine(url: str):
     kwargs: dict = {"pool_pre_ping": True}
+    if not url.startswith("sqlite"):
+        s = get_settings()
+        kwargs.update(pool_size=s.db_pool_size, max_overflow=s.db_max_overflow, pool_recycle=1800)
     if url.startswith("sqlite"):
         # The API and the worker are separate processes sharing one file:
         # wait up to 30 s for a lock instead of failing with "database is
