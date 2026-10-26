@@ -80,6 +80,17 @@ def enrich() -> None:
 def housekeeping() -> None:
     with SessionLocal() as db:
         tracker.housekeeping(db)
+    repair_untitled()
+
+
+def repair_untitled() -> None:
+    try:
+        with SessionLocal() as db:
+            n = tracker.repair_untitled(db)
+            if n:
+                log.info("gave provisional titles to %s hidden articles", n)
+    except Exception as e:  # noqa: BLE001 - never block start-up
+        log.warning("repair_untitled failed: %s", e)
 
 
 # ── Phase 3: YouTube ───────────────────────────────────────────────────────
@@ -218,6 +229,7 @@ def _ist_to_utc(hour: int, minute: int) -> tuple[int, int]:
 def start_embedded() -> BaseScheduler:
     """Run the worker inside the API process (EMBEDDED_WORKER=true)."""
     sched = build_scheduler(BackgroundScheduler)
+    repair_untitled()
     sched.start()
     log.info("embedded worker started inside the API process")
     return sched
@@ -235,6 +247,7 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     log.info("worker started: poll every %s min, sweep every %s min", s.fast_poll_minutes, s.sitemap_sweep_minutes)
+    repair_untitled()
     sched.start()
 
 

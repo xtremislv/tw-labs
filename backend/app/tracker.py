@@ -211,8 +211,13 @@ def ingest(db: Session, site: Site, candidates: list[Candidate], *, backfill: bo
             db.add(art)
             new += 1
             continue
-        if not art.title and c.title:
-            art.title = c.title
+        if not art.title:
+            # rows added before provisional titles existed stayed hidden
+            art.title = c.title or slug_title(canon)
+        if art.published_at is None and art.enrich_status != "ok":
+            art.published_at = as_utc(c.published) or (lastmod if c.kind == "sitemap" else None)
+            if art.published_at:
+                art.activity_at = art.published_at
         old = as_utc(art.source_lastmod)
         if lastmod and (old is None or lastmod > old + timedelta(minutes=1)):
             art.source_lastmod = lastmod
@@ -534,6 +539,7 @@ def enrich_article(db: Session, fetcher: Fetcher, art: Article) -> str:
     except Exception as e:  # noqa: BLE001
         art.enrich_attempts += 1
         art.last_error = f"{type(e).__name__}: {e}"[:500]
+        art.title = art.title or slug_title(art.url)
         if art.enrich_attempts >= s.enrich_max_attempts:
             art.enrich_status = "error"
             art.next_check_at = None
@@ -626,6 +632,19 @@ def enrich_pending(db: Session, fetcher: Fetcher, *, limit: int | None = None, t
 
 
 # ── housekeeping ───────────────────────────────────────────────────────────
+def repair_untitled(db: Session) -> int:
+    """Give a provisional title/date to rows stored before provisional titles
+    existed, so they show in the feed instead of staying hidden."""
+    n = 0
+    for a in db.scalars(select(Article).where(Article.title.is_(None), Article.enrich_status != "gone").limit(5000)):
+        a.title = slug_title(a.url)
+        if a.published_at is None and a.source_lastmod is not None:
+            a.published_at = a.activity_at = as_utc(a.source_lastmod)
+        n += 1
+    db.commit()
+    return n
+
+
 def housekeeping(db: Session, *, trigger: str = "schedule") -> JobRun:
     """Keep the database small: drop old articles (RETENTION_DAYS) and old
     job logs. Runs daily; essential on the 500 MB free Supabase database."""

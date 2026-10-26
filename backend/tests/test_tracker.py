@@ -229,3 +229,15 @@ def test_sitemap_articles_visible_before_enrichment_and_coverage_report(db, clie
     assert "reviews-sitemap.xml" in names and "category-sitemap.xml" not in names
     rv = names["reviews-sitemap.xml"]
     assert rep["added_now"] >= 1 and rv["latest_day_urls"] == 2 and rv["visible"] == 2 and not rv["missing"]
+
+
+def test_repair_and_reingest_give_old_untitled_rows_a_title(db, client):
+    fs = FakeSite()
+    site = _site(db, fs)
+    db.add(Article(site_id=site.id, url="https://gadgetnews.test/roblox-clover-rpg-codes", enrich_status="pending",
+                   source_lastmod=tracker.utcnow(), first_seen_at=tracker.utcnow()))
+    db.commit()
+    assert client.get("/api/articles", params={"q": "roblox"}).json()["total"] == 0
+    assert tracker.repair_untitled(db) == 1
+    items = client.get("/api/articles", params={"q": "roblox"}).json()["items"]
+    assert items and items[0]["title"] == "Roblox clover rpg codes"
