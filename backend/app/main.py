@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from . import auth
 from .config import get_settings
-from .routers import articles, health, sites, system
+from .routers import articles, health, insights, sites, system, youtube
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("webintel.api")
@@ -71,3 +71,5 @@ app.include_router(auth.router)
 app.include_router(sites.router)
 app.include_router(articles.router)
 app.include_router(system.router)
+app.include_router(youtube.router)
+app.include_router(insights.router)

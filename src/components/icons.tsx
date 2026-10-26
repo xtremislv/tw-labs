@@ -31,3 +31,10 @@ export const PenIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="M12 2
 export const WordsIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="M4 6h16M4 12h16M4 18h10" /></svg>;
 export const StarIcon = ({ size = 12, filled = false }: P & { filled?: boolean }) => <svg {...base(size)} fill={filled ? "currentColor" : "none"}><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z" /></svg>;
 export const LinkIcon = ({ size = 12 }: P) => <svg {...base(size)}><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></svg>;
+export const MegaphoneIcon = ({ size = 12 }: P) => <svg {...base(size)}><path d="m3 11 18-5v12L3 14v-3z" /><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" /></svg>;
+export const TrendUpIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="m22 7-8.5 8.5-5-5L2 17" /><path d="M16 7h6v6" /></svg>;
+export const HeartIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7z" /></svg>;
+export const CommentIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>;
+export const ChecklistIcon = ({ size = 15 }: P) => <svg {...base(size)}><path d="m3 7 2 2 4-4" /><path d="m3 17 2 2 4-4" /><path d="M13 6h8M13 12h8M13 18h8" /></svg>;
+export const ZapIcon = ({ size = 11 }: P) => <svg {...base(size)}><path d="M13 2 3 14h9l-1 8 10-12h-9z" /></svg>;
+export const SendIcon = ({ size = 12 }: P) => <svg {...base(size)}><path d="m22 2-7 20-4-9-9-4z" /><path d="M22 2 11 13" /></svg>;

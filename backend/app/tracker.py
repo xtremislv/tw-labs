@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ from .parsers import (
     Candidate,
     choose_child_sitemaps,
     is_feed,
+    latest_date_children,
     parse_feed,
     parse_homepage_links,
     parse_sitemap,
@@ -41,6 +42,11 @@ from .urlnorm import canonicalize, looks_like_article, same_site
 log = logging.getLogger("webintel.tracker")
 
 FAST_KINDS = ("wp_rest", "news_sitemap", "rss", "html")
+IST = timezone(timedelta(hours=5, minutes=30))
+# child sitemap URL → the <lastmod> it had when we last read it. Lets a poll
+# skip children that haven't changed since the previous pass (in-process
+# only; a restart simply re-reads today's children once).
+_CHILD_SEEN: dict[str, datetime] = {}
 MIN_ARTICLE_WORDS = 80
 
 
@@ -198,6 +204,72 @@ def ingest(db: Session, site: Site, candidates: list[Candidate], *, backfill: bo
     return new, rechecks
 
 
+# ── latest-date sitemap pass ───────────────────────────────────────────────
+def latest_sitemap_pass(db: Session, fetcher: Fetcher, site: Site) -> tuple[list[Candidate], str] | None:
+    """Read every child sitemap carrying the index's latest date.
+
+    Returns (candidates, note), or None when the site has no sitemap index.
+    The WP REST API only lists the "post" type and RSS only the last few
+    items, so this is what catches custom post types (reviews, deals, how-tos)
+    and busy days with more posts than the feed holds.
+    """
+    s = get_settings()
+    srcs = [x for x in site.sources if x.enabled and x.kind == "sitemap"]
+    if not srcs:
+        return None
+    src = srcs[0]
+    since = as_utc(src.last_ok_at) - timedelta(minutes=30) if src.last_ok_at else None
+    r = fetcher.get(src.url)
+    if not r.ok:
+        raise FetchError(f"sitemap index HTTP {r.status}")
+    doc = parse_sitemap(r.content or r.text)
+    if not doc.is_index:
+        return None  # a single urlset is already covered by the 6-hourly sweep
+    limit = s.latest_sitemaps_max_children
+    chosen = latest_date_children(doc.children, tz=IST, since=since, limit=limit)
+    cands: list[Candidate] = []
+    read = skipped = 0
+    for child in chosen:
+        lm = as_utc(child.lastmod)
+        if lm is not None and _CHILD_SEEN.get(child.url) == lm:
+            skipped += 1
+            continue
+        try:
+            cr = fetcher.get(child.url)
+            if not cr.ok:
+                continue
+            cdoc = parse_sitemap(cr.content or cr.text)
+            if cdoc.is_index:  # nested index (e.g. per-year) → same rule one level down
+                for g in latest_date_children(cdoc.children, tz=IST, since=since, limit=limit):
+                    gr = fetcher.get(g.url)
+                    if gr.ok:
+                        cands += parse_sitemap(gr.content or gr.text).urls
+            else:
+                cands += cdoc.urls
+            read += 1
+            if lm is not None:
+                _CHILD_SEEN[child.url] = lm
+        except Exception as e:  # noqa: BLE001 - one bad child mustn't stop the rest
+            log.warning("latest sitemap %s: %s", child.url, e)
+    src.last_ok_at, src.consecutive_errors, src.last_error = utcnow(), 0, None
+    db.commit()
+    latest = max((c.lastmod for c in chosen if c.lastmod), default=None)
+    day = latest.astimezone(IST).strftime("%d %b") if latest else "no dates"
+    return cands, f"sitemaps dated {day}: read {read}, unchanged {skipped}, {len(cands)} URLs"
+
+
+def ingest_sitemap_candidates(db: Session, site: Site, cands: list[Candidate]) -> tuple[int, int]:
+    """Ingest a latest-date pass. A child sitemap lists up to 1,000 posts, so
+    entries not touched in the last 2 days are filed as backfill — they
+    never show up as NEW or unread, only genuinely fresh posts do."""
+    fresh_after = utcnow() - timedelta(days=2)
+    fresh = [c for c in cands if c.lastmod is None or as_utc(c.lastmod) >= fresh_after]
+    old = [c for c in cands if c.lastmod is not None and as_utc(c.lastmod) < fresh_after]
+    n1, r1 = ingest(db, site, fresh, backfill=False)
+    n2, r2 = ingest(db, site, old, backfill=True)
+    return n1 + n2, r1 + r2
+
+
 # ── poll + sweep ───────────────────────────────────────────────────────────
 def poll_site(db: Session, fetcher: Fetcher, site: Site, *, trigger: str = "schedule", backfill: bool = False) -> JobRun:
     with job_run(db, "poll", site_id=site.id, trigger=trigger) as run:
@@ -209,7 +281,28 @@ def poll_site(db: Session, fetcher: Fetcher, site: Site, *, trigger: str = "sche
             items = _fetch_source(db, fetcher, src, site)
             if items is not None:
                 break
-        if items is None:
+        new = rech = processed = 0
+        if items is not None:
+            new, rech = ingest(db, site, items, backfill=backfill)
+            processed = len(items)
+
+        # Latest-date sitemap pass: every child sitemap updated today.
+        sm_ok = False
+        if get_settings().latest_sitemaps_on_poll and not backfill:
+            try:
+                res = latest_sitemap_pass(db, fetcher, site)
+                if res is not None:
+                    cands, note = res
+                    n, rc = ingest_sitemap_candidates(db, site, cands)
+                    new, rech, processed = new + n, rech + rc, processed + len(cands)
+                    run.detail = note
+                    sm_ok = True
+            except Exception as e:  # noqa: BLE001 - the fast source result still stands
+                db.rollback()
+                log.warning("latest sitemap pass %s: %s", site.domain, e)
+                run.detail = f"sitemap pass failed: {type(e).__name__}: {e}"[:500]
+
+        if items is None and not sm_ok:
             site.last_error = (
                 "No feeds found — the site may be blocking automated requests. Try “Re-scan feeds”."
                 if not sources
@@ -219,8 +312,7 @@ def poll_site(db: Session, fetcher: Fetcher, site: Site, *, trigger: str = "sche
             if not sources:
                 return run
             raise FetchError(site.last_error)
-        new, rech = ingest(db, site, items, backfill=backfill)
-        run.items_new, run.items_updated, run.items_processed = new, rech, len(items)
+        run.items_new, run.items_updated, run.items_processed = new, rech, processed
         site.last_poll_ok_at, site.last_error = utcnow(), None
         db.commit()
     return run
@@ -241,7 +333,12 @@ def sweep_site(db: Session, fetcher: Fetcher, site: Site, *, trigger: str = "sch
                 cands: list[Candidate] = []
                 if doc.is_index:
                     limit = s.max_child_sitemaps_per_sweep * (3 if backfill else 1)
-                    for child in choose_child_sitemaps(doc.children, cutoff=cutoff, limit=limit):
+                    # The usual post/news children, plus every other child (any
+                    # post type) changed inside the window.
+                    picked = choose_child_sitemaps(doc.children, cutoff=cutoff, limit=limit)
+                    picked += [c for c in latest_date_children(doc.children, tz=IST, since=cutoff, limit=s.latest_sitemaps_max_children)
+                               if c.url not in {p.url for p in picked}]
+                    for child in picked:
                         try:
                             cr = fetcher.get(child.url)
                             if not cr.ok:

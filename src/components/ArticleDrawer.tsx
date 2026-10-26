@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, type ArticleDetail } from "../lib/api";
-import { CONTENT_TYPE_LABEL, SOURCE_LABEL, fmtDateTime, fmtNum, fmtRelative } from "../lib/format";
+import { api, type ArticleDetail, type Video } from "../lib/api";
+import { CONTENT_TYPE_LABEL, SOURCE_LABEL, fmtDateTime, fmtNum, fmtRelative, fmtViews, ratioColor } from "../lib/format";
+import { ShortlistButton } from "./VideoCard";
 import { useAsync } from "../hooks/useAsync";
 import { ExternalIcon, LinkIcon, XIcon } from "./icons";
 import { SiteIcon } from "./SiteIcon";
@@ -26,6 +27,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export function ArticleDrawer({ articleId, onClose, onOpenOther }: { articleId: number; onClose: () => void; onOpenOther: (id: number) => void }) {
   const { data: a, loading, error, reload } = useAsync<ArticleDetail | null>(() => api.article(articleId), [articleId], null);
   const [copied, setCopied] = useState<string | null>(null);
+  // Embedded videos that belong to tracked channels (with their stats).
+  const ytKey = a?.youtube_ids?.join(",") ?? "";
+  const tracked = useAsync<Video[]>(() => (ytKey ? api.videosByIds(ytKey.split(",")) : Promise.resolve([])), [ytKey], []);
+  const trackedById = new Map(tracked.data.map(v => [v.id, v]));
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -89,6 +94,7 @@ export function ArticleDrawer({ articleId, onClose, onOpenOther }: { articleId: 
                 <div className="flex flex-wrap gap-2 pt-1">
                   <a href={a.url} target="_blank" rel="noreferrer" className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5"><ExternalIcon />Open original</a>
                   <button onClick={() => copy(a.url, "Link copied")} className="text-xs px-3 py-1.5 rounded-lg hover-surface flex items-center gap-1.5" style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}><LinkIcon />Copy link</button>
+                  <ShortlistButton key={a.id} item={{ kind: "article", ref_id: String(a.id), title: a.title ?? a.url, url: a.url, source: a.site_name }} />
                   <button onClick={() => copy(brief, "Brief copied")} className="text-xs px-3 py-1.5 rounded-lg hover-surface" style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }} title="Title, source, link, summary and outline — ready to paste into a pitch">Copy brief</button>
                 </div>
               </div>
@@ -101,6 +107,17 @@ export function ArticleDrawer({ articleId, onClose, onOpenOther }: { articleId: 
                 <Stat label="Images" value={a.image_count ?? "—"} />
                 <Stat label="Affiliate links" value={a.affiliate_link_count ?? "—"} title="Amazon / Flipkart / deal-network links inside the article" />
               </div>
+
+              {(a.own_clicks_28d != null || a.own_views_28d != null) && (
+                <Section title="Our performance · last 28 days">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Stat label="Search clicks" value={fmtNum(a.own_clicks_28d)} />
+                    <Stat label="Impressions" value={fmtNum(a.own_impressions_28d)} />
+                    <Stat label="Avg position" value={a.own_position != null ? a.own_position.toFixed(1) : "—"} />
+                    <Stat label="Page views (GA4)" value={fmtNum(a.own_views_28d)} />
+                  </div>
+                </Section>
+              )}
 
               {a.versions.length > 0 && (
                 <Section title={`Edit history · ${a.versions.length}`}>
@@ -148,11 +165,26 @@ export function ArticleDrawer({ articleId, onClose, onOpenOther }: { articleId: 
               {(a.youtube_ids?.length ?? 0) > 0 && (
                 <Section title="Embedded YouTube videos">
                   <div className="flex flex-col gap-1">
-                    {a.youtube_ids!.map(id => (
-                      <a key={id} href={`https://www.youtube.com/watch?v=${id}`} target="_blank" rel="noreferrer" className="text-xs font-mono hover:underline flex items-center gap-1.5" style={{ color: "var(--accent-light)" }}>
-                        <ExternalIcon />youtube.com/watch?v={id}
-                      </a>
-                    ))}
+                    {a.youtube_ids!.map(id => {
+                      const v = trackedById.get(id);
+                      return v ? (
+                        <a key={id} href={v.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg p-1.5 hover-surface" style={{ border: "1px solid var(--border)" }}>
+                          {v.thumbnail_url ? <img src={v.thumbnail_url} alt="" className="w-20 h-11 rounded object-cover shrink-0" loading="lazy" /> : null}
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-xs truncate" style={{ color: "var(--text-primary)" }}>{v.title}</span>
+                            <span className="block text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
+                              {v.channel_name} · {fmtViews(v.views)} views
+                              {v.overperform_ratio_median != null && <> · <span style={{ color: ratioColor(v.overperform_ratio_median) }}>{v.overperform_ratio_median.toFixed(1)}x</span></>}
+                            </span>
+                          </span>
+                          <span className="badge-own text-[9px] px-1 rounded shrink-0">TRACKED</span>
+                        </a>
+                      ) : (
+                        <a key={id} href={`https://www.youtube.com/watch?v=${id}`} target="_blank" rel="noreferrer" className="text-xs font-mono hover:underline flex items-center gap-1.5" style={{ color: "var(--accent-light)" }}>
+                          <ExternalIcon />youtube.com/watch?v={id}
+                        </a>
+                      );
+                    })}
                   </div>
                 </Section>
               )}

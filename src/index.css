@@ -250,3 +250,64 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .drawer, .skeleton, .sidebar-slide { animation: none; transition: none; }
 }
+
+/* Phase 3/4 — same badge pattern as TW-Labs. */
+.badge-sponsor {
+  background: rgba(245,158,11,0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245,158,11,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+:root[data-theme="light"] .badge-sponsor {
+  color: #92400e;
+  border: 1px solid rgba(245,158,11,0.4);
+}
+.badge-gap {
+  background: rgba(248,113,113,0.13);
+  color: var(--tier-danger);
+  border: 1px solid rgba(248,113,113,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+.badge-covered {
+  background: rgba(74,222,128,0.12);
+  color: var(--success);
+  border: 1px solid rgba(74,222,128,0.3);
+  font-family: "JetBrains Mono", monospace;
+}
+.badge-overperform {
+  background: rgba(250,204,21,0.14);
+  color: var(--warning);
+  border: 1px solid rgba(250,204,21,0.35);
+  font-family: "JetBrains Mono", monospace;
+}
+.seg {
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.seg > button {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+.seg > button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.label-caps {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-family: Lora, serif;
+}

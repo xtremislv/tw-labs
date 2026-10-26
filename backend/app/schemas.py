@@ -104,6 +104,10 @@ class ArticleOut(BaseModel):
     discovered_via: str | None
     enrich_status: str
     latest_change: str | None = None
+    own_clicks_28d: int | None = None
+    own_impressions_28d: int | None = None
+    own_position: float | None = None
+    own_views_28d: int | None = None
 
 
 class ArticleDetailOut(ArticleOut):

@@ -124,6 +124,10 @@ export interface Article {
   discovered_via: SourceKind | null;
   enrich_status: string;
   latest_change: string | null;
+  own_clicks_28d?: number | null;
+  own_impressions_28d?: number | null;
+  own_position?: number | null;
+  own_views_28d?: number | null;
 }
 
 export interface Version {
@@ -217,6 +221,214 @@ export function articleQueryString(q: ArticleQuery): string {
   return p.toString();
 }
 
+// ── YouTube (Phase 3) ──────────────────────────────────────────────────────
+export interface Channel {
+  id: number;
+  external_id: string;
+  handle: string;
+  name: string;
+  avatar_url: string | null;
+  subscriber_count: number | null;
+  cohort: string | null;
+  site_id: number | null;
+  site_name: string | null;
+  is_active: boolean;
+  track_posts: boolean;
+  created_at: string;
+  last_scraped_at: string | null;
+  posts_scraped_at: string | null;
+  last_error: string | null;
+  video_count: number;
+  median_views_last10: number | null;
+  last_published_at: string | null;
+}
+
+export interface Video {
+  id: string;
+  channel_id: number;
+  channel_name: string;
+  channel_avatar_url: string | null;
+  title: string;
+  thumbnail_url: string | null;
+  url: string;
+  views: number;
+  likes: number | null;
+  comments: number | null;
+  published_at: string;
+  duration_seconds: number;
+  format: "long" | "short";
+  avg_views_baseline: number | null;
+  overperform_ratio: number | null;
+  median_views_baseline: number | null;
+  overperform_ratio_median: number | null;
+  has_sponsor_segment: boolean;
+  sponsor_segment_seconds: number | null;
+  h1_views: number | null;
+  h1_ratio: number | null;
+  h3_views: number | null;
+  h3_ratio: number | null;
+  h6_views: number | null;
+  h6_ratio: number | null;
+  embedded_in: number;
+}
+
+export interface VideoPage {
+  items: Video[];
+  total: number;
+  overperform_count: number;
+  limit: number;
+  offset: number;
+}
+
+export interface Post {
+  id: string;
+  channel_id: number;
+  channel_name: string;
+  channel_avatar_url: string | null;
+  post_type: string | null;
+  text: string | null;
+  url: string | null;
+  image_url: string | null;
+  video_id: string | null;
+  poll_options: string[] | null;
+  likes: number | null;
+  comments: number | null;
+  published_text: string | null;
+  published_at: string | null;
+  first_seen_at: string;
+}
+
+export interface YouTubeStatus {
+  api_key_set: boolean;
+  apify_set: boolean;
+  quota_used_today: number;
+  quota_budget: number;
+  apify_posts_today: number;
+  channels: number;
+  videos: number;
+  posts: number;
+  last_scrape_at: string | null;
+  last_posts_at: string | null;
+  overperform_threshold: number;
+}
+
+export interface VideoQuery {
+  channels?: number[];
+  cohort?: string;
+  date_from?: string;
+  date_to?: string;
+  views_threshold?: number;
+  format?: "all" | "long" | "short";
+  sort_by?: "ratio" | "views" | "date" | "engagement" | "velocity";
+  metric?: "average" | "median";
+  has_sponsor?: boolean;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// ── Phase 4 ────────────────────────────────────────────────────────────────
+export interface StoryVideo {
+  id: string;
+  title: string;
+  channel_name: string;
+  views: number;
+  ratio: number | null;
+  published_at: string;
+  thumbnail_url: string | null;
+}
+
+export interface Story {
+  key: string;
+  label: string;
+  terms: string[];
+  site_count: number;
+  competitor_site_count: number;
+  article_count: number;
+  first_at: string;
+  last_at: string;
+  hours_to_3_sites: number | null;
+  covered_by_us: boolean | null;
+  gap: boolean | null;
+  score: number;
+  sites: { id: number; name: string; icon_url: string | null; is_own_site: boolean }[];
+  articles: Article[];
+  videos: StoryVideo[];
+  shortlisted: boolean;
+}
+
+export interface Radar {
+  stories: Story[];
+  total: number;
+  gaps: number;
+  own_site_configured: boolean;
+  window_hours: number;
+}
+
+export type ShortStatus = "idea" | "assigned" | "in_progress" | "published" | "dropped";
+
+export interface ShortlistItem {
+  id: number;
+  kind: "article" | "story" | "video" | "post" | "idea";
+  ref_id: string | null;
+  title: string;
+  url: string | null;
+  source: string | null;
+  status: ShortStatus;
+  owner: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRule {
+  id: number;
+  name: string;
+  kind: "article" | "video";
+  keywords: string[] | null;
+  site_ids: number[] | null;
+  channel_ids: number[] | null;
+  content_types: string[] | null;
+  include_updates: boolean;
+  min_ratio: number | null;
+  destinations: ("slack" | "telegram")[];
+  enabled: boolean;
+  created_at: string;
+  last_fired_at: string | null;
+  fire_count: number;
+}
+
+export type AlertRuleInput = Omit<AlertRule, "id" | "created_at" | "last_fired_at" | "fire_count" | "keywords" | "site_ids" | "channel_ids" | "content_types"> & {
+  keywords: string[];
+  site_ids: number[];
+  channel_ids: number[];
+  content_types: string[];
+};
+
+export interface Integrations {
+  slack: boolean;
+  telegram: boolean;
+  youtube: boolean;
+  apify: boolean;
+  search_console: boolean;
+  ga4: boolean;
+  digest_enabled: boolean;
+  digest_time_ist: string;
+  digest_last_sent: string | null;
+  benchmark_last_sync: { at: string; matched: number; gsc_pages: number; ga4_pages: number } | null;
+  dashboard_url: string;
+}
+
+function qs(o: Record<string, unknown>): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) {
+    if (v === undefined || v === null || v === "" || v === false) continue;
+    p.set(k, Array.isArray(v) ? v.join(",") : String(v));
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
 // ── Calls ──────────────────────────────────────────────────────────────────
 export const api = {
   me: () => request<{ auth_required: boolean; authenticated: boolean }>("/api/auth/me"),
@@ -238,4 +450,36 @@ export const api = {
   status: () => request<SystemStatus>("/api/status"),
   jobs: (siteId?: number) => request<JobRun[]>(`/api/jobs${siteId != null ? `?site_id=${siteId}` : ""}`),
   refresh: () => request<{ queued: boolean }>("/api/refresh", { method: "POST" }),
+
+  // YouTube
+  ytStatus: () => request<YouTubeStatus>("/api/youtube/status"),
+  channels: () => request<Channel[]>("/api/youtube/channels"),
+  addChannel: (body: { handle: string; cohort?: string; site_id?: number | null }) =>
+    request<Channel>("/api/youtube/channels", { method: "POST", body: JSON.stringify(body) }),
+  updateChannel: (id: number, body: Partial<{ cohort: string; site_id: number | null; clear_site: boolean; is_active: boolean; track_posts: boolean }>) =>
+    request<Channel>(`/api/youtube/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteChannel: (id: number) => request<void>(`/api/youtube/channels/${id}`, { method: "DELETE" }),
+  videos: (q: VideoQuery) => request<VideoPage>(`/api/youtube/videos${qs(q as Record<string, unknown>)}`),
+  videosByIds: (ids: string[]) => request<Video[]>(`/api/youtube/videos/by-ids?ids=${ids.join(",")}`),
+  videoArticles: (id: string) => request<Article[]>(`/api/youtube/videos/${encodeURIComponent(id)}/articles`),
+  posts: (q: { channels?: number[]; days?: number; q?: string }) => request<Post[]>(`/api/youtube/posts${qs(q)}`),
+  ytRefresh: (posts = false) => request<{ queued: boolean }>(`/api/youtube/refresh${posts ? "?posts=true" : ""}`, { method: "POST" }),
+
+  // Phase 4
+  radar: (q: { hours?: number; min_sites?: number; gaps_only?: boolean; cohort?: string; q?: string }) => request<Radar>(`/api/radar${qs(q)}`),
+  shortlist: () => request<ShortlistItem[]>("/api/shortlist"),
+  addShortlist: (body: { kind: ShortlistItem["kind"]; ref_id?: string | null; title: string; url?: string | null; source?: string | null; notes?: string | null }) =>
+    request<ShortlistItem>("/api/shortlist", { method: "POST", body: JSON.stringify(body) }),
+  updateShortlist: (id: number, body: Partial<Pick<ShortlistItem, "status" | "owner" | "notes" | "title">>) =>
+    request<ShortlistItem>(`/api/shortlist/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteShortlist: (id: number) => request<void>(`/api/shortlist/${id}`, { method: "DELETE" }),
+  rules: () => request<AlertRule[]>("/api/alerts/rules"),
+  addRule: (body: AlertRuleInput) => request<AlertRule>("/api/alerts/rules", { method: "POST", body: JSON.stringify(body) }),
+  updateRule: (id: number, body: AlertRuleInput) => request<AlertRule>(`/api/alerts/rules/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteRule: (id: number) => request<void>(`/api/alerts/rules/${id}`, { method: "DELETE" }),
+  integrations: () => request<Integrations>("/api/integrations"),
+  testAlert: (dest: "slack" | "telegram") => request<{ ok: boolean }>(`/api/alerts/test?dest=${dest}`, { method: "POST" }),
+  digestPreview: () => request<{ title: string; lines: string[] }>("/api/digest/preview"),
+  digestSend: () => request<{ ok: boolean }>("/api/digest/send", { method: "POST" }),
+  benchmarkSync: () => request<{ matched?: number; skipped?: string }>("/api/benchmark/sync", { method: "POST" }),
 };

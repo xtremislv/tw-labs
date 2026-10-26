@@ -29,3 +29,11 @@ def db():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _reset_sitemap_memory():
+    from app import tracker
+    tracker._CHILD_SEEN.clear()
+    yield
+    tracker._CHILD_SEEN.clear()

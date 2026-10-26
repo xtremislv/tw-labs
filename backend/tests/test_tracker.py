@@ -1,8 +1,9 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import tracker
 from app.discovery import discover
 from app.models import Article, ArticleVersion, Site
+from app.urlnorm import canonicalize
 from tests.fakesite import FakeSite
 
 
@@ -78,7 +79,10 @@ def test_backfill_enrich_and_update_detection(db):
     assert new.is_backfill is False and new.discovered_via == "wp_rest"
 
 
-def test_poll_uses_etag_304(db):
+def test_poll_uses_etag_304(db, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setenv("LATEST_SITEMAPS_ON_POLL", "false")  # isolate the RSS source
+    get_settings.cache_clear()
     fs = FakeSite(wordpress=False, news=False)
     f = fs.fetcher()
     site = _site(db, fs)
@@ -98,6 +102,7 @@ def test_poll_uses_etag_304(db):
     fs.handler = handler
     f2 = fs.fetcher()
     run = tracker.poll_site(db, f2, site)
+    get_settings.cache_clear()
     assert run.ok and run.items_processed == 0
 
 
@@ -142,3 +147,54 @@ def test_housekeeping_drops_old_articles_and_logs(db, monkeypatch):
     assert db.scalar(select(ArticleVersion).where(ArticleVersion.article_id == old.id)) is None
     assert len(db.scalars(select(Article)).all()) == 3
     assert db.scalar(select(JobRun).where(JobRun.job == "poll", JobRun.started_at < utcnow() - timedelta(days=59))) is None
+
+
+def test_latest_date_children_picks_every_child_updated_today():
+    from datetime import timedelta, timezone
+    from app.parsers import SitemapIndexEntry, latest_date_children
+    from tests.fakesite import NOW
+    ist = timezone(timedelta(hours=5, minutes=30))
+    kids = [
+        SitemapIndexEntry("https://x.test/post-sitemap1.xml", NOW - timedelta(days=300)),
+        SitemapIndexEntry("https://x.test/post-sitemap9.xml", NOW),
+        SitemapIndexEntry("https://x.test/reviews-sitemap.xml", NOW - timedelta(minutes=5)),
+        SitemapIndexEntry("https://x.test/deals-sitemap.xml", NOW - timedelta(days=4)),
+        SitemapIndexEntry("https://x.test/category-sitemap.xml", NOW),
+        SitemapIndexEntry("https://x.test/web-story-sitemap.xml", NOW),
+    ]
+    got = {c.url.rsplit("/", 1)[-1] for c in latest_date_children(kids, tz=ist)}
+    today = NOW.astimezone(ist).date()
+    expected = {"post-sitemap9.xml"} | ({"reviews-sitemap.xml"} if (NOW - timedelta(minutes=5)).astimezone(ist).date() == today else set())
+    assert got == expected
+    # `since` also brings in a child changed after the previous pass
+    got2 = {c.url.rsplit("/", 1)[-1] for c in latest_date_children(kids, tz=ist, since=NOW - timedelta(days=5))}
+    assert "deals-sitemap.xml" in got2 and "post-sitemap1.xml" not in got2
+    # no lastmod anywhere → newest-looking children
+    assert latest_date_children([SitemapIndexEntry("https://x.test/post-sitemap1.xml"), SitemapIndexEntry("https://x.test/post-sitemap2.xml")], tz=ist)[0].url.endswith("2.xml")
+
+
+def test_poll_catches_todays_custom_post_type_via_sitemap(db):
+    fs = FakeSite()
+    f = fs.fetcher()
+    site = _site(db, fs)
+    tracker.rediscover(db, f, site)
+    tracker.backfill_site(db, f, site)
+    before = db.scalar(select(func.count(Article.id)))
+    # Published today as a custom post type: invisible to WP REST, RSS and
+    # the news sitemap — only reviews-sitemap.xml lists it.
+    fs.publish("nothing-phone-4-review-verdict", "Nothing Phone 4 review: verdict", cpt=True)
+    fs.publish("oneplus-16-launch-date-confirmed", "OnePlus 16 launch date confirmed")
+    run = tracker.poll_site(db, f, site)
+    urls = {a.url for a in db.scalars(select(Article))}
+    fs.url = lambda slug: canonicalize(f"https://{fs.domain}/{slug}/")
+    assert fs.url("nothing-phone-4-review-verdict") in urls and fs.url("oneplus-16-launch-date-confirmed") in urls
+    assert run.items_new == 2 and db.scalar(select(func.count(Article.id))) == before + 2
+    assert "sitemaps dated" in (run.detail or "")
+    cpt = db.scalar(select(Article).where(Article.url == fs.url("nothing-phone-4-review-verdict")))
+    assert cpt.is_backfill is False and cpt.discovered_via == "sitemap"
+    # next poll: unchanged children aren't re-read
+    n_before = len([u for u in fs.requests if u.endswith("reviews-sitemap.xml")])
+    run2 = tracker.poll_site(db, f, site)
+    assert run2.items_new == 0
+    assert len([u for u in fs.requests if u.endswith("reviews-sitemap.xml")]) == n_before
+    assert "unchanged" in run2.detail

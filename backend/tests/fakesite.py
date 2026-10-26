@@ -56,14 +56,23 @@ class FakeSite:
         if add_h2:
             a["h2"].append(add_h2)
 
-    def publish(self, slug: str, title: str):
+    def publish(self, slug: str, title: str, *, cpt: bool = False):
+        """cpt=True: a custom post type (e.g. a review) that WordPress lists
+        only in reviews-sitemap.xml — not in the REST API, RSS or news sitemap."""
         self.articles[slug] = {
+            "cpt": cpt,
             "title": title,
             "published": NOW,
             "modified": NOW,
             "paras": [f"Fresh story body line {j} about {title} with enough words to be counted properly." for j in range(10)],
             "h2": ["What's new"],
         }
+
+    def posts(self):
+        return {k: v for k, v in self.articles.items() if not v.get("cpt")}
+
+    def cpts(self):
+        return {k: v for k, v in self.articles.items() if v.get("cpt")}
 
     # ── HTTP handler ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -84,16 +93,25 @@ class FakeSite:
                 + '<a href="/category/mobiles/">Mobiles</a></body></html>'
             ))
         if path == "/sitemap_index.xml":
-            kids = ["category-sitemap.xml", "post-sitemap1.xml", "post-sitemap2.xml"] + (["news-sitemap.xml"] if self.news else [])
-            body = "".join(f"<sitemap><loc>https://{self.domain}/{k}</loc><lastmod>{iso(NOW if k != 'post-sitemap1.xml' else NOW - timedelta(days=400))}</lastmod></sitemap>" for k in kids)
+            kids = ["category-sitemap.xml", "post-sitemap1.xml", "post-sitemap2.xml", "reviews-sitemap.xml"] + (["news-sitemap.xml"] if self.news else [])
+            def lm(k):
+                if k == "post-sitemap1.xml":
+                    return NOW - timedelta(days=400)
+                if k == "reviews-sitemap.xml":
+                    return max((a["modified"] for a in self.cpts().values()), default=NOW - timedelta(days=30))
+                if k == "post-sitemap2.xml":
+                    return max(a["modified"] for a in self.posts().values())
+                return NOW
+            body = "".join(f"<sitemap><loc>https://{self.domain}/{k}</loc><lastmod>{iso(lm(k))}</lastmod></sitemap>" for k in kids)
             return httpx.Response(200, text=f'<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</sitemapindex>')
-        if path == "/post-sitemap2.xml":
-            body = "".join(f"<url><loc>{self.url(s)}</loc><lastmod>{iso(a['modified'])}</lastmod></url>" for s, a in self.articles.items())
+        if path in ("/post-sitemap2.xml", "/reviews-sitemap.xml"):
+            src = self.posts() if path == "/post-sitemap2.xml" else self.cpts()
+            body = "".join(f"<url><loc>{self.url(s)}</loc><lastmod>{iso(a['modified'])}</lastmod></url>" for s, a in src.items())
             return httpx.Response(200, text=f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>')
         if path in ("/post-sitemap1.xml", "/category-sitemap.xml"):
             return httpx.Response(200, text=f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://{self.domain}/category/mobiles/</loc></url></urlset>')
         if path == "/news-sitemap.xml" and self.news:
-            recent = [(s, a) for s, a in self.articles.items() if NOW - a["published"] < timedelta(hours=48)]
+            recent = [(s, a) for s, a in self.posts().items() if NOW - a["published"] < timedelta(hours=48)]
             body = "".join(
                 f"<url><loc>{self.url(s)}</loc><news:news><news:publication><news:name>GN</news:name><news:language>en</news:language></news:publication>"
                 f"<news:publication_date>{iso(a['published'])}</news:publication_date><news:title>{a['title']}</news:title></news:news></url>"
@@ -103,13 +121,13 @@ class FakeSite:
         if path.rstrip("/") == "/feed" and self.rss:
             items = "".join(
                 f"<item><title>{a['title']}</title><link>{self.url(s)}</link><pubDate>{a['published'].strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate></item>"
-                for s, a in self.articles.items()
+                for s, a in self.posts().items()
             )
             return httpx.Response(200, text=f'<?xml version="1.0"?><rss version="2.0"><channel><title>GN</title>{items}</channel></rss>')
         if path == "/wp-json/wp/v2/posts":
             if not self.wordpress:
                 return httpx.Response(404, json={"code": "rest_no_route"})
-            posts = sorted(self.articles.items(), key=lambda kv: kv[1]["modified"], reverse=True)
+            posts = sorted(self.posts().items(), key=lambda kv: kv[1]["modified"], reverse=True)
             return httpx.Response(200, text=json.dumps([
                 {"link": self.url(s), "date_gmt": a["published"].strftime("%Y-%m-%dT%H:%M:%S"),
                  "modified_gmt": a["modified"].strftime("%Y-%m-%dT%H:%M:%S"), "title": {"rendered": a["title"].replace("&", "&#038;")}}

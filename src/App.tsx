@@ -12,9 +12,13 @@ import { Sidebar, type SavedView, type Section } from "./components/Sidebar";
 import { ComingSoon } from "./views/ComingSoon";
 import { SourcesView } from "./views/SourcesView";
 import { LoginScreen } from "./views/LoginScreen";
+import { YouTubeView } from "./views/YouTubeView";
+import { RadarView } from "./views/RadarView";
+import { ShortlistView } from "./views/ShortlistView";
+import { AlertsView } from "./views/AlertsView";
 
 const PAGE = 48;
-const SECTIONS: Section[] = ["Live Feed", "Topic Radar", "Site Analytics", "YouTube", "Sources"];
+const SECTIONS: Section[] = ["Live Feed", "Topic Radar", "YouTube", "Shortlist", "Alerts", "Site Analytics", "Sources"];
 const slug = (s: Section) => s.toLowerCase().replace(/\s+/g, "-");
 
 type Theme = "light" | "dark";
@@ -75,6 +79,13 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
     const url = `${window.location.pathname}${s ? `?${s}` : ""}#${slug(section)}`;
     window.history.replaceState(null, "", url);
   }, [filters, section, openArticle]);
+
+  // Back/forward and #links switch sections.
+  useEffect(() => {
+    const onHash = () => { const h = window.location.hash.replace("#", ""); const s = SECTIONS.find(x => slug(x) === h); if (s) setSection(s); };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   // Keyboard: Ctrl/Cmd+K or "/" focuses search
   useEffect(() => {
@@ -185,7 +196,12 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
 
   const subtitle = section === "Live Feed"
     ? `New & updated competitor articles · ${currentMonthLabel()}`
-    : section === "Sources" ? "Sites, feeds and tracker health" : "Coming soon";
+    : section === "Sources" ? "Sites, feeds and tracker health"
+    : section === "Topic Radar" ? "Stories several competitors are covering, and the ones techwiser.com hasn't"
+    : section === "YouTube" ? "Competitor channels · overperformance, velocity, sponsors and community posts"
+    : section === "Shortlist" ? "Ideas the team picked from the feed, radar and YouTube"
+    : section === "Alerts" ? "Slack / Telegram alerts, daily digest and integrations"
+    : "Coming soon";
 
   return (
     <div className="flex h-full w-full overflow-hidden" style={{ background: "var(--bg-base)", fontFamily: "Inter, sans-serif" }}>
@@ -198,7 +214,7 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
         savedViews={savedViews}
         onOpenView={v => { setFilters(searchToFilters(v.search)); setSection("Live Feed"); }}
         onDeleteView={deleteView}
-        onPickCohort={c => { setFilters({ ...filters, cohort: c }); setSection("Live Feed"); }}
+        onPickCohort={c => { setFilters({ ...filters, cohort: c }); if (section !== "Topic Radar" && section !== "YouTube") setSection("Live Feed"); }}
         activeCohort={filters.cohort}
         status={status}
         theme={theme}
@@ -246,11 +262,11 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
                 {toast.text}
               </span>
             )}
-            <button onClick={refresh} disabled={refreshing} title={status?.last_poll_at ? `Last checked ${fmtRelative(status.last_poll_at)}` : "Check every site right now"}
+            {(section === "Live Feed" || section === "Topic Radar" || section === "Sources") && <button onClick={refresh} disabled={refreshing} title={status?.last_poll_at ? `Last checked ${fmtRelative(status.last_poll_at)}` : "Check every site right now"}
               className="flex items-center gap-1.5 rounded-lg h-9 px-3 transition-colors hover-surface disabled:opacity-50 shrink-0" style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}>
               <span className={refreshing ? "animate-spin" : undefined}><RefreshIcon /></span>
               <span className="text-xs hidden sm:inline" style={{ fontFamily: "Lora, serif" }}>{refreshing ? "Refreshing…" : "Refresh now"}</span>
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -261,6 +277,14 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
                 onChanged={() => { reloadSites(); fetchStatus(); }}
                 onShowFeed={id => { setFilters({ ...defaultFilters(), sites: [id], datePreset: "7d", ...presetToRange("7d") }); setSection("Live Feed"); }} />
             </div>
+          ) : section === "YouTube" ? (
+            <YouTubeView sites={sites} cohort={filters.cohort} onOpenArticle={setOpenArticle} />
+          ) : section === "Topic Radar" ? (
+            <RadarView cohort={filters.cohort} onOpenArticle={setOpenArticle} onGoSources={() => setSection("Sources")} />
+          ) : section === "Shortlist" ? (
+            <ShortlistView />
+          ) : section === "Alerts" ? (
+            <AlertsView sites={sites} />
           ) : section !== "Live Feed" ? (
             <ComingSoon section={section} />
           ) : (
@@ -315,9 +339,9 @@ function Dashboard({ authRequired }: { authRequired: boolean }) {
                   </div>
                 )}
               </div>
-              {openArticle != null && <ArticleDrawer key={openArticle} articleId={openArticle} onClose={() => setOpenArticle(null)} onOpenOther={setOpenArticle} />}
             </>
           )}
+          {openArticle != null && section !== "Sources" && <ArticleDrawer key={openArticle} articleId={openArticle} onClose={() => setOpenArticle(null)} onOpenOther={setOpenArticle} />}
         </main>
       </div>
     </div>

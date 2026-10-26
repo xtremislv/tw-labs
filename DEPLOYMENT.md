@@ -52,6 +52,28 @@ enable "notify on failure". Without this the API sleeps after 15 minutes and tra
 - Add techwiser.com ("This is our site") + competitors in **Sources**; each reaches **Healthy**.
 - cron-job.org history shows successful 200 responses every 10 minutes.
 
+## 6. Switch on YouTube, alerts and the benchmark (Phase 3/4)
+Each key is optional and turns on one feature. Add them in Render → **webintel-api** → **Environment**
+→ **Add Environment Variable** → **Save, rebuild and deploy**. (A Blueprint only asks for `sync: false`
+keys when a service is first created, so on the existing service they must be added by hand.)
+
+| Key | Turns on | Where to get it |
+|---|---|---|
+| `YOUTUBE_API_KEY` | YouTube tab | console.cloud.google.com → new project → APIs & Services → Library → **YouTube Data API v3** → Enable → Credentials → Create credentials → API key (restrict it to that API). Free: 10,000 units/day, about 3 per channel per day. |
+| `APIFY_API_TOKEN` | Community posts | console.apify.com → Settings → Integrations → Personal API token. Apify's free monthly credit is usually enough for one run a day; check the actor's pricing page (`lurkapi/youtube-community-posts-scraper`) before adding many channels. |
+| `SLACK_WEBHOOK_URL` | Alerts + digest in Slack | api.slack.com/apps → Create New App → From scratch → Incoming Webhooks → On → Add New Webhook → pick the channel → copy the URL. |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Alerts + digest in Telegram | Telegram → @BotFather → `/newbot` → token. Add the bot to your team group, send a message, open `https://api.telegram.org/bot<token>/getUpdates` and copy `chat.id` (group ids start with `-`). |
+| `DASHBOARD_URL` | Links inside alerts | Already set to `https://webintel-lwou.onrender.com` by the Blueprint. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`, `GSC_SITE_URL`, `GA4_PROPERTY_ID` | techwiser.com benchmark (optional) | Google Cloud → IAM → Service accounts → Create → Keys → Add key → JSON. Enable the **Search Console API** and **Google Analytics Data API**. In Search Console → Settings → Users, add the service account e-mail (Restricted). In GA4 → Admin → Property access, add it as Viewer. Paste the whole JSON file as one line; `GSC_SITE_URL` is `sc-domain:techwiser.com` (or the URL-prefix property); `GA4_PROPERTY_ID` is the number under Admin → Property details. |
+
+Then, in the dashboard:
+1. **YouTube → Channels:** add competitor channels (@handle). Videos appear about a minute later.
+2. **Alerts:** check the Connections panel shows green, press **Test Slack/Telegram**, then create rules.
+3. **Topic Radar** needs techwiser.com marked as "our site" in Sources to show gaps.
+
+Schedules (IST): YouTube scrape 06:00, community posts 07:00, velocity hourly, alerts every 5 min,
+digest 09:30, benchmark 06:15. All run inside the API, so cron-job.org must keep it awake.
+
 ## Free-plan limits to know
 - No login: anyone with the link can use it. Share it only inside the team.
 - Render may restart the free API at any time; tracking resumes on its own within a minute.

@@ -23,7 +23,7 @@ from .database import SessionLocal
 from .fetcher import Fetcher
 from .models import JobRequest, JobRun, Site
 from .timeutil import utcnow
-from . import tracker
+from . import alerts, benchmark, tracker, youtube
 
 log = logging.getLogger("webintel.worker")
 fetcher: Fetcher | None = None
@@ -82,6 +82,72 @@ def housekeeping() -> None:
         tracker.housekeeping(db)
 
 
+# ── Phase 3: YouTube ───────────────────────────────────────────────────────
+def youtube_scrape() -> None:
+    if not get_settings().youtube_api_key:
+        return
+    with SessionLocal() as db:
+        with tracker.job_run(db, "youtube") as run:
+            st = youtube.scrape_all(db)
+            run.items_new, run.items_updated, run.items_processed = st.videos_new, st.videos_updated, st.channels
+            run.detail = f"{st.units} quota units" + ("; " + "; ".join(st.errors[:5]) if st.errors else "")
+
+
+def youtube_velocity() -> None:
+    if not get_settings().youtube_api_key:
+        return
+    with SessionLocal() as db:
+        try:
+            youtube.capture_velocity(db)
+        except youtube.YouTubeError as e:
+            log.warning("velocity check failed: %s", e)
+
+
+def youtube_posts() -> None:
+    if not get_settings().apify_api_token:
+        return
+    with SessionLocal() as db:
+        with tracker.job_run(db, "posts") as run:
+            new, errors = youtube.scrape_posts(db)
+            run.items_new = new
+            run.detail = "; ".join(errors)[:2000] or None
+
+
+def youtube_one_channel(channel_id: int) -> None:
+    from .models import Channel
+
+    with SessionLocal() as db:
+        ch = db.get(Channel, channel_id)
+        if ch is None:
+            return
+        with tracker.job_run(db, "youtube", trigger="add_channel") as run:
+            client = youtube.YouTubeClient(get_settings().youtube_api_key)
+            st = youtube.ScrapeStats()
+            youtube.scrape_channel(db, client, ch, st, sponsor_budget=[get_settings().sponsorblock_max_checks_per_scrape])
+            youtube.record_usage(db, "youtube", client.units)
+            run.items_new, run.items_processed = st.videos_new, 1
+
+
+# ── Phase 4: alerts, digest, benchmark ─────────────────────────────────────
+def alerts_check() -> None:
+    with SessionLocal() as db:
+        try:
+            alerts.check_alerts(db)
+            alerts.maybe_send_digest(db)
+        except Exception as e:  # noqa: BLE001 - alert delivery must never kill the scheduler
+            log.warning("alerts check failed: %s", e)
+
+
+def benchmark_sync() -> None:
+    if not any(benchmark.configured().values()):
+        return
+    with SessionLocal() as db:
+        try:
+            benchmark.sync(db)
+        except Exception as e:  # noqa: BLE001
+            log.warning("benchmark sync failed: %s", e)
+
+
 def process_requests() -> None:
     heartbeat()
     with SessionLocal() as db:
@@ -95,6 +161,12 @@ def process_requests() -> None:
                 site = db.get(Site, req.site_id) if req.site_id else None
                 if req.kind == "poll_all":
                     poll_all(trigger="manual")
+                elif req.kind == "youtube_all":
+                    youtube_scrape()
+                elif req.kind == "youtube_posts":
+                    youtube_posts()
+                elif req.kind == "youtube_channel":  # site_id holds the channel id here
+                    youtube_one_channel(req.site_id)
                 elif site is None:
                     raise ValueError("site no longer exists")
                 elif req.kind == "backfill":
@@ -126,7 +198,21 @@ def build_scheduler(cls: type[BaseScheduler]) -> BaseScheduler:
     sched.add_job(sweep_all, "interval", minutes=s.sitemap_sweep_minutes, id="sweep")
     sched.add_job(enrich, "interval", minutes=s.enrich_minutes, id="enrich", next_run_time=utcnow())
     sched.add_job(housekeeping, "interval", hours=24, id="housekeeping")
+    # IST has no daylight saving, so IST clock times convert to fixed UTC ones
+    # (and no time-zone database is needed, which Windows lacks).
+    yh, ym = _ist_to_utc(s.youtube_scrape_hour_ist, s.youtube_scrape_minute_ist)
+    sched.add_job(youtube_scrape, "cron", hour=yh, minute=ym, id="youtube")
+    sched.add_job(youtube_velocity, "interval", minutes=60, id="velocity")
+    ph, pm = _ist_to_utc(s.posts_scrape_hour_ist, 0)
+    sched.add_job(youtube_posts, "cron", hour=ph, minute=pm, id="posts")
+    sched.add_job(alerts_check, "interval", minutes=s.alerts_check_minutes, id="alerts")
+    sched.add_job(benchmark_sync, "cron", hour=0, minute=45, id="benchmark")  # 06:15 IST
     return sched
+
+
+def _ist_to_utc(hour: int, minute: int) -> tuple[int, int]:
+    total = (hour * 60 + minute - 330) % (24 * 60)
+    return total // 60, total % 60
 
 
 def start_embedded() -> BaseScheduler:

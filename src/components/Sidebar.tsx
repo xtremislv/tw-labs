@@ -1,8 +1,8 @@
 import type { Site, SystemStatus } from "../lib/api";
 import { fmtRelative } from "../lib/format";
-import { BookmarkIcon, ChartIcon, FeedIcon, GlobeIcon, MoonIcon, RadarIcon, SunIcon, XIcon, YTIcon } from "./icons";
+import { BellIcon, BookmarkIcon, ChartIcon, ChecklistIcon, FeedIcon, GlobeIcon, MoonIcon, RadarIcon, SunIcon, XIcon, YTIcon } from "./icons";
 
-export type Section = "Live Feed" | "Topic Radar" | "Site Analytics" | "YouTube" | "Sources";
+export type Section = "Live Feed" | "Topic Radar" | "YouTube" | "Shortlist" | "Alerts" | "Site Analytics" | "Sources";
 
 export interface SavedView {
   name: string;
@@ -11,9 +11,11 @@ export interface SavedView {
 
 const NAV: { label: Section; icon: React.ReactElement; soon?: string }[] = [
   { label: "Live Feed", icon: <FeedIcon /> },
-  { label: "Topic Radar", icon: <RadarIcon />, soon: "Phase 4" },
+  { label: "Topic Radar", icon: <RadarIcon /> },
+  { label: "YouTube", icon: <YTIcon /> },
+  { label: "Shortlist", icon: <ChecklistIcon /> },
+  { label: "Alerts", icon: <BellIcon /> },
   { label: "Site Analytics", icon: <ChartIcon />, soon: "Phase 2" },
-  { label: "YouTube", icon: <YTIcon />, soon: "Phase 3" },
   { label: "Sources", icon: <GlobeIcon /> },
 ];
 

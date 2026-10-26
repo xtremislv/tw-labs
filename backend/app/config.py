@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Max sitemap child files read per sweep (date-partitioned sitemaps can
     # have hundreds; we only want the recent ones).
     max_child_sitemaps_per_sweep: int = 4
+    # Every poll also reads each child sitemap in the site's sitemap index
+    # that was updated on the latest date (catches every post type that
+    # WordPress publishes today, not just what the REST/RSS feed lists).
+    latest_sitemaps_on_poll: bool = True
+    latest_sitemaps_max_children: int = 20
     # Max articles fetched + parsed per enrichment pass (across all sites).
     enrich_batch_size: int = 60
     enrich_max_attempts: int = 3
@@ -76,8 +81,56 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 5
 
+    # ── Phase 3: YouTube (same maths as TW-Labs) ─────────────────────────
+    youtube_api_key: str = ""
+    youtube_daily_quota_budget: int = 10000
+    # Daily full scrape (IST clock time) + hourly early-velocity checks.
+    youtube_scrape_hour_ist: int = 6
+    youtube_scrape_minute_ist: int = 0
+    baseline_window_videos: int = 10
+    baseline_min_videos: int = 3
+    overperform_ratio_default: float = 2.0
+    velocity_checkpoints_hours: str = "1,3,6"
+    velocity_checkpoint_grace_hours: float = 2.0
+    sponsorblock_enabled: bool = True
+    sponsorblock_api_base: str = "https://sponsor.ajay.app"
+    sponsorblock_categories: str = "sponsor,selfpromo,exclusive_access"
+    sponsorblock_recheck_hours: int = 24
+    sponsorblock_max_checks_per_scrape: int = 40
+    manual_youtube_cooldown_seconds: int = 300
+    # Community posts via an Apify actor (pay-per-post on your Apify account).
+    apify_api_token: str = ""
+    apify_posts_actor_id: str = "lurkapi/youtube-community-posts-scraper"
+    apify_max_posts_per_channel: int = 10
+    posts_scrape_hour_ist: int = 7
+
+    # ── Phase 4: alerts, digest, benchmark ───────────────────────────────
+    slack_webhook_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    alerts_check_minutes: int = 5
+    digest_enabled: bool = True
+    digest_hour_ist: int = 9
+    digest_minute_ist: int = 30
+    # Public dashboard address, used for links inside alerts and the digest.
+    dashboard_url: str = ""
+    # Own-site benchmark (optional): a Google service-account JSON (the whole
+    # file's contents) that has been added as a user on the Search Console
+    # property and the GA4 property.
+    google_service_account_json: str = ""
+    gsc_site_url: str = ""  # e.g. "sc-domain:techwiser.com" or "https://techwiser.com/"
+    ga4_property_id: str = ""  # numeric, e.g. "123456789"
+
     # Cooldown for the dashboard's "Refresh now" button.
     manual_refresh_cooldown_seconds: int = 120
+
+    @property
+    def velocity_checkpoint_hours_list(self) -> list[int]:
+        return [int(x) for x in self.velocity_checkpoints_hours.split(",") if x.strip().isdigit() and int(x) in (1, 3, 6)]
+
+    @property
+    def sponsorblock_category_list(self) -> list[str]:
+        return [c.strip() for c in self.sponsorblock_categories.split(",") if c.strip()]
 
     @property
     def sqlalchemy_url(self) -> str:

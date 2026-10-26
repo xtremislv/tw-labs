@@ -134,6 +134,37 @@ def choose_child_sitemaps(
     return pool[-limit:][::-1]
 
 
+# Child sitemaps that never list articles (taxonomy archives, media, web
+# stories). Narrower than _SKIP_CHILD on purpose: custom post types such as
+# reviews-sitemap.xml or deals-sitemap.xml must be kept.
+_TAXONOMY_CHILD = re.compile(
+    r"(category|categories|post_tag|tag-sitemap|tags-sitemap|author|attachment|taxonom|web-?stor|image-sitemap)",
+    re.I,
+)
+
+
+def latest_date_children(
+    children: list[SitemapIndexEntry], *, tz, since: datetime | None = None, limit: int = 20
+) -> list[SitemapIndexEntry]:
+    """Every child sitemap updated on the most recent date in the index.
+
+    WordPress SEO plugins (Yoast, Rank Math, AIOSEO) bump a child's <lastmod>
+    when a post in it is published or edited, so every child that carries
+    the index's latest date holds something new — whatever its post type.
+    Children changed since `since` (the previous pass) are included too, so a
+    post published just before midnight isn't skipped when the date rolls
+    over. Without any lastmod the newest-looking children are used instead.
+    """
+    kept = [c for c in children if not _TAXONOMY_CHILD.search(c.url.rsplit("/", 1)[-1])] or children
+    dated = [c for c in kept if c.lastmod]
+    if not dated:
+        return choose_child_sitemaps(kept, cutoff=None, limit=2)
+    latest = max(c.lastmod for c in dated).astimezone(tz).date()
+    picked = [c for c in dated if c.lastmod.astimezone(tz).date() == latest or (since is not None and c.lastmod >= since)]
+    picked.sort(key=lambda c: c.lastmod, reverse=True)
+    return picked[:limit]
+
+
 def parse_feed(text: str) -> list[Candidate]:
     d = feedparser.parse(text)
     out: list[Candidate] = []

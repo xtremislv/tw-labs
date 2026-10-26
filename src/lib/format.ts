@@ -59,3 +59,37 @@ export const SOURCE_LABEL: Record<string, string> = {
   sitemap: "Sitemap",
   html: "Homepage scan",
 };
+
+/** 1234 → "1.2K", 2_500_000 → "2.5M" (TW-Labs style). */
+export function fmtViews(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}K`;
+  return String(n);
+}
+
+export function fmtDuration(sec: number): string {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Overperformance tiers, same bands as TW-Labs: <0.5x red, <1x grey, <2x green, <3x blue, 3x+ gold. */
+export function ratioColor(r: number | null | undefined): string {
+  if (r == null) return "var(--text-muted)";
+  if (r < 0.5) return "var(--tier-danger)";
+  if (r < 1) return "var(--tier-grey)";
+  if (r < 2) return "var(--success)";
+  if (r < 3) return "var(--tier-blue)";
+  return "var(--warning)";
+}
+
+/** Fixed bright colours for the badge on top of thumbnails (dark scrim). */
+export function overlayRatioColor(r: number | null | undefined): string {
+  if (r == null) return "#a8adc0";
+  if (r < 0.5) return "#f87171";
+  if (r < 1) return "#94a3b8";
+  if (r < 2) return "#4ade80";
+  if (r < 3) return "#38bdf8";
+  return "#facc15";
+}
