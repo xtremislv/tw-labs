@@ -18,7 +18,7 @@ from ..timeutil import utcnow
 
 router = APIRouter(prefix="/api", tags=["articles"])
 
-VISIBLE = ("ok", "pending", "recheck", "error")
+VISIBLE = ("ok", "pending", "recheck", "error", "feed_only")
 
 
 def _visible():

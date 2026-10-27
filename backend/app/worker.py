@@ -85,7 +85,7 @@ def housekeeping() -> None:
     repair_untitled()
 
 
-DISCOVERY_VERSION = "2"  # bump when discover() learns new methods
+DISCOVERY_VERSION = "3"  # bump when discover() learns new methods
 
 
 def rediscover_one_due() -> None:

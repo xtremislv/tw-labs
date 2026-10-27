@@ -57,7 +57,8 @@ export const SOURCE_LABEL: Record<string, string> = {
   news_sitemap: "News sitemap",
   rss: "RSS feed",
   sitemap: "Sitemap",
-  html: "Homepage scan",
+  html: "Homepage / listing page",
+  search: "Search-engine news feed",
 };
 
 /** 1234 → "1.2K", 2_500_000 → "2.5M" (TW-Labs style). */

@@ -36,6 +36,7 @@ from .parsers import (
     latest_date_children,
     parse_feed,
     parse_homepage_links,
+    parse_search_feed,
     parse_sitemap,
     parse_wp_posts,
 )
@@ -44,7 +45,7 @@ from .urlnorm import canonicalize, looks_like_article, same_site
 
 log = logging.getLogger("webintel.tracker")
 
-FAST_KINDS = ("wp_rest", "news_sitemap", "rss", "html")
+FAST_KINDS = ("wp_rest", "news_sitemap", "rss", "html", "search")
 IST = timezone(timedelta(hours=5, minutes=30))
 # child sitemap URL → the <lastmod> it had when we last read it. Lets a poll
 # skip children that haven't changed since the previous pass (in-process
@@ -113,6 +114,8 @@ def _parse_source(src: SiteSource, text: str, content: bytes, site: Site) -> lis
         return parse_feed(text)
     if src.kind == "html":
         return parse_homepage_links(text, src.url, site.domain)
+    if src.kind == "search":
+        return parse_search_feed(text, site.domain)
     doc = parse_sitemap(content or text)
     if doc.is_index:
         raise ValueError("expected a urlset, got a sitemap index")
@@ -207,7 +210,8 @@ def ingest(db: Session, site: Site, candidates: list[Candidate], *, backfill: bo
                 activity_at=prov_pub or now,
                 is_backfill=backfill,
                 discovered_via=c.kind,
-                enrich_status="pending",
+                # A Google redirect link can't be read as an article page.
+                enrich_status="feed_only" if c.kind == "search" and not same_site(canon, site.domain) else "pending",
             )
             db.add(art)
             new += 1

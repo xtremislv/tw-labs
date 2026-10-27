@@ -19,9 +19,9 @@ from urllib.parse import urljoin, urlsplit
 from lxml import html as lxml_html
 
 from .fetcher import FetchError, Fetcher
-from .parsers import find_feed_links, is_feed, parse_feed, parse_homepage_links, parse_sitemap, parse_wp_posts
+from .parsers import _blocked_hint, find_feed_links, is_feed, parse_feed, parse_homepage_links, parse_search_feed, parse_sitemap, parse_wp_posts
 
-PRIORITY = {"wp_rest": 10, "news_sitemap": 20, "rss": 30, "sitemap": 60, "html": 90}
+PRIORITY = {"wp_rest": 10, "news_sitemap": 20, "rss": 30, "sitemap": 60, "html": 90, "search": 95}
 WP_FIELDS = "_fields=link,date_gmt,modified_gmt,title"
 COMMON_SITEMAPS = [
     "/sitemap_index.xml",
@@ -104,6 +104,7 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
             if r.ok:
                 home = r
                 break
+            res.log.append(f"homepage {candidate}: {_blocked_hint(r.status, r.headers)}")
         except FetchError as e:
             res.log.append(f"homepage {candidate}: {e}")
     if home is not None:
@@ -224,6 +225,26 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
                     n_list += 1
             except FetchError:
                 continue
+
+    # 6. Search-engine news feeds: only when the site itself gave us nothing
+    #    usable (it blocks automated requests, or publishes no feed/sitemap).
+    #    Public RSS from Google News / Bing News for site:domain — titles,
+    #    links and dates of recent articles, without touching the site.
+    if not any(s.kind in ("wp_rest", "news_sitemap", "rss", "sitemap") for s in res.sources):
+        bare = domain.removeprefix("www.")
+        for url in (f"https://www.bing.com/news/search?q=site%3a{bare}&format=rss&count=100",
+                    f"https://news.google.com/rss/search?q=site:{bare}+when:7d&hl=en-IN&gl=IN&ceid=IN:en"):
+            try:
+                r = fetcher.get(url)
+                items = parse_search_feed(r.text, bare) if r.ok else []
+                if items:
+                    res.add(FoundSource("search", url, len(items)))
+                else:
+                    res.log.append(f"search feed {url.split('/')[2]}: {'no results' if r.ok else _blocked_hint(r.status, r.headers)}")
+            except FetchError as e:
+                res.log.append(f"search feed {url.split('/')[2]}: {e}")
+        if any(s.kind == "search" for s in res.sources):
+            res.log.append("the site blocks or lacks feeds — tracking it through search-engine news feeds (recent articles only)")
 
     res.sources.sort(key=lambda s: s.priority)
     return res

@@ -200,7 +200,7 @@ export function ArticleDrawer({ articleId, onClose, onOpenOther }: { articleId: 
                   <span>First seen {fmtDateTime(a.first_seen_at)}{a.is_backfill ? " (initial import)" : ""}</span>
                   {a.discovered_via && <span>Found via {SOURCE_LABEL[a.discovered_via] ?? a.discovered_via}</span>}
                   {a.modified_at && <span>Site's own "modified" date: {fmtDateTime(a.modified_at)}</span>}
-                  {a.enrich_status !== "ok" && <span>Status: {a.enrich_status === "pending" ? "waiting to be read" : a.enrich_status}</span>}
+                  {a.enrich_status !== "ok" && <span>Status: {a.enrich_status === "pending" ? "waiting to be read" : a.enrich_status === "feed_only" ? "listed by a search-engine news feed (the site blocks automated reading)" : a.enrich_status}</span>}
                 </div>
               </Section>
             </>

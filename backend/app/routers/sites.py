@@ -12,7 +12,7 @@ from ..urlnorm import normalize_domain
 
 router = APIRouter(prefix="/api/sites", tags=["sites"])
 
-FAST_KINDS = ("wp_rest", "news_sitemap", "rss", "html")
+FAST_KINDS = ("wp_rest", "news_sitemap", "rss", "html", "search")
 
 
 def _health(site: Site) -> str:
@@ -35,7 +35,7 @@ def _health(site: Site) -> str:
 def _stats(db: Session) -> dict[int, dict]:
     now = utcnow()
     d1, d7 = now - timedelta(days=1), now - timedelta(days=7)
-    live = Article.enrich_status.in_(("ok", "pending", "recheck", "error"))
+    live = Article.enrich_status.in_(("ok", "pending", "recheck", "error", "feed_only"))
     out: dict[int, dict] = {}
     def count(cond):
         return func.sum(case((cond, 1), else_=0))

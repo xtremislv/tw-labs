@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["system"])
 def status(db: Session = Depends(get_db)):
     now = utcnow()
     d1 = now - timedelta(days=1)
-    visible = Article.enrich_status.in_(("ok", "pending", "recheck", "error"))
+    visible = Article.enrich_status.in_(("ok", "pending", "recheck", "error", "feed_only"))
     runs = db.scalars(select(JobRun).where(JobRun.job != "heartbeat").order_by(JobRun.started_at.desc()).limit(25)).all()
     last_poll = db.scalar(select(func.max(JobRun.started_at)).where(JobRun.job == "poll"))
     heartbeat = db.scalar(select(func.max(JobRun.started_at)))

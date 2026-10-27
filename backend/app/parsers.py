@@ -186,6 +186,45 @@ def parse_feed(text: str) -> list[Candidate]:
     return out
 
 
+def _blocked_hint(status: int, headers: dict) -> str:
+    h = {k.lower(): v for k, v in headers.items()}
+    if h.get("cf-mitigated") or ("cloudflare" in h.get("server", "").lower() and status in (403, 503)):
+        return "blocked by Cloudflare bot protection"
+    if status in (401, 403):
+        return "access denied to automated requests"
+    if status == 429:
+        return "rate-limited"
+    return f"HTTP {status}"
+
+
+def parse_search_feed(text: str, domain: str) -> list[Candidate]:
+    """Google News / Bing News RSS for `site:domain`. Bing wraps each link in
+    a click-tracker whose url= parameter is the real article; Google's links
+    stay Google redirects (they open the article in a browser)."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from .urlnorm import same_site
+
+    out: list[Candidate] = []
+    for e in feedparser.parse(text).entries:
+        link = e.get("link") or ""
+        if "bing.com" in link and "url=" in link:
+            link = (parse_qs(urlsplit(link).query).get("url") or [""])[0]
+            if not same_site(link, domain):
+                continue
+        elif "news.google.com" in link:
+            src = (e.get("source") or {}).get("href", "")
+            if domain not in src:
+                continue
+        elif not same_site(link, domain):
+            continue
+        title = _strip_html(e.get("title")) or ""
+        title = re.sub(r"\s+[-–|]\s+[^-–|]{2,60}$", "", title) or title  # " - Destructoid"
+        pub = parse_dt(e.get("published")) or parse_dt(e.get("updated"))
+        out.append(Candidate(url=link, published=pub, lastmod=pub, title=title or None, kind="search"))
+    return out
+
+
 def is_feed(text: str) -> bool:
     head = text.lstrip()[:500].lower()
     return head.startswith("<?xml") and ("<rss" in text[:2000].lower() or "<feed" in text[:2000].lower()) or head.startswith("<rss") or head.startswith("<feed")
