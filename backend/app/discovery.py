@@ -26,11 +26,21 @@ WP_FIELDS = "_fields=link,date_gmt,modified_gmt,title"
 COMMON_SITEMAPS = [
     "/sitemap_index.xml",
     "/sitemap.xml",
+    "/sitemap-index.xml",
+    "/wp-sitemap.xml",
     "/news-sitemap.xml",
     "/sitemap-news.xml",
     "/news_sitemap.xml",
     "/sitemap_news.xml",
 ]
+COMMON_FEEDS = ["/feed/", "/rss", "/rss.xml", "/feed.xml", "/atom.xml", "/feeds/news/", "/feeds/mashup/", "/news/feed/"]
+# Listing pages that most publishers keep (latest posts, news) — scraped for
+# links like the homepage when they actually list articles.
+COMMON_LISTINGS = ["/news/", "/latest/", "/latest-news/", "/news/latest/", "/category/news/", "/articles/", "/guides/"]
+MAX_SITEMAPS = 4
+MAX_NEWS_SITEMAPS = 3
+MAX_FEEDS = 3
+MAX_LISTINGS = 3
 
 
 @dataclass
@@ -104,7 +114,9 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
     else:
         res.log.append("homepage unreachable — the site may block automated requests")
 
-    # 2. Sitemaps: robots.txt first, then the common paths.
+    # 2. Sitemaps: every one robots.txt declares, then the common paths.
+    #    Each distinct general sitemap (index or urlset) becomes a source —
+    #    publishers often split posts, news and guides across several.
     sitemap_urls: list[str] = []
     try:
         rb = fetcher.get(base + "/robots.txt", check_robots=False)
@@ -116,23 +128,26 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
         res.log.append(f"robots.txt: {e}")
     sitemap_urls += [base + p for p in COMMON_SITEMAPS]
     seen: set[str] = set()
-    found_general = False
+    n_general = n_news = 0
     for sm_url in sitemap_urls:
-        if sm_url in seen or len(seen) >= 10:
+        if sm_url in seen or len(seen) >= 14:
             continue
         seen.add(sm_url)
         try:
             r = fetcher.get(sm_url)
             if not r.ok:
                 continue
+            if r.url != sm_url and r.url in seen:
+                continue  # /sitemap.xml redirecting to an index we already have
+            seen.add(r.url)
             doc = parse_sitemap(r.content or r.text)
         except (FetchError, ValueError, Exception) as e:  # noqa: BLE001 - lxml raises XMLSyntaxError subclasses
             res.log.append(f"sitemap {sm_url}: {type(e).__name__}")
             continue
         if doc.is_index:
             news_children = [c for c in doc.children if "news" in c.url.rsplit("/", 1)[-1].lower()]
-            for child in news_children[:2]:
-                if child.url in seen:
+            for child in news_children[:MAX_NEWS_SITEMAPS]:
+                if child.url in seen or n_news >= MAX_NEWS_SITEMAPS:
                     continue
                 seen.add(child.url)
                 try:
@@ -142,14 +157,17 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
                     cdoc = None
                 if cdoc and not cdoc.is_index and cdoc.is_news and cdoc.urls:
                     res.add(FoundSource("news_sitemap", child.url, len(cdoc.urls)))
-            if not found_general:
-                res.add(FoundSource("sitemap", sm_url, len(doc.children)))
-                found_general = True
+                    n_news += 1
+            if n_general < MAX_SITEMAPS:
+                res.add(FoundSource("sitemap", r.url, len(doc.children)))
+                n_general += 1
         elif doc.is_news and doc.urls:
-            res.add(FoundSource("news_sitemap", sm_url, len(doc.urls)))
-        elif doc.urls and not found_general:
-            res.add(FoundSource("sitemap", sm_url, len(doc.urls)))
-            found_general = True
+            if n_news < MAX_NEWS_SITEMAPS:
+                res.add(FoundSource("news_sitemap", r.url, len(doc.urls)))
+                n_news += 1
+        elif doc.urls and n_general < MAX_SITEMAPS:
+            res.add(FoundSource("sitemap", r.url, len(doc.urls)))
+            n_general += 1
 
     # 3. WordPress REST API.
     wp_base = base + "/wp-json/wp/v2/posts"
@@ -165,29 +183,47 @@ def discover(fetcher: Fetcher, domain: str) -> DiscoveryResult:
             res.log.append(f"wp_rest: {type(e).__name__}")
             break
 
-    # 4. RSS / Atom.
+    # 4. RSS / Atom: every feed the homepage advertises, then the common
+    #    paths — several feeds (news, reviews, guides) are all kept.
     feed_urls = find_feed_links(home.text, base) if home is not None else []
-    feed_urls += [base + "/feed", base + "/rss", base + "/feed/"]
+    feed_urls += [base + p for p in COMMON_FEEDS]
     tried: set[str] = set()
+    n_feeds = 0
     for fu in feed_urls:
-        if fu.rstrip("/") in tried or len(tried) >= 4:
+        key = fu.rstrip("/")
+        if key in tried or len(tried) >= 10 or n_feeds >= MAX_FEEDS:
             continue
-        tried.add(fu.rstrip("/"))
+        tried.add(key)
         try:
             r = fetcher.get(fu)
-            if r.ok and is_feed(r.text):
+            if r.ok and is_feed(r.text) and r.url.rstrip("/") not in {s.url.rstrip("/") for s in res.sources}:
                 items = parse_feed(r.text)
                 if items:
                     res.add(FoundSource("rss", r.url, len(items)))
-                    break
+                    n_feeds += 1
         except FetchError:
             continue
 
-    # 5. Homepage scrape fallback — always registered, used only when the
-    #    feeds above fail.
+    # 5. Homepage + latest/news listing pages (link scrape). Always kept: they
+    #    catch posts a feed or sitemap leaves out, and work on any CMS.
     if home is not None:
-        links = parse_homepage_links(home.text, base, urlsplit(base).hostname.removeprefix("www."))
+        domain_ = urlsplit(base).hostname.removeprefix("www.")
+        links = parse_homepage_links(home.text, base, domain_)
         res.add(FoundSource("html", res.home_url, len(links)))
+        n_list = 0
+        for lp in COMMON_LISTINGS:
+            if n_list >= MAX_LISTINGS:
+                break
+            try:
+                r = fetcher.get(base + lp)
+                if not r.ok or r.url.rstrip("/") == res.home_url.rstrip("/"):
+                    continue
+                found = parse_homepage_links(r.text, r.url, domain_)
+                if len(found) >= 8:
+                    res.add(FoundSource("html", r.url, len(found)))
+                    n_list += 1
+            except FetchError:
+                continue
 
     res.sources.sort(key=lambda s: s.priority)
     return res

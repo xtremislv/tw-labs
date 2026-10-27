@@ -89,7 +89,7 @@ class FakeSite:
                 f'<link rel="icon" href="/fav.png">'
                 + (f'<link rel="alternate" type="application/rss+xml" href="https://{self.domain}/feed/">' if self.rss else "")
                 + "</head><body>"
-                + "".join(f'<a href="{self.url(s)}">{a["title"]}</a>' for s, a in self.articles.items())
+                + "".join(f'<a href="{self.url(s)}">{a["title"]}</a>' for s, a in self.posts().items())
                 + '<a href="/category/mobiles/">Mobiles</a></body></html>'
             ))
         if path == "/sitemap_index.xml":

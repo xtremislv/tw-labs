@@ -16,13 +16,15 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.schedulers.blocking import BlockingScheduler
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import func, select
 
 from .config import get_settings
 from .database import SessionLocal
 from .fetcher import Fetcher
 from .models import JobRequest, JobRun, Site
-from .timeutil import utcnow
+from .timeutil import as_utc, utcnow
 from . import alerts, benchmark, tracker, youtube
 
 log = logging.getLogger("webintel.worker")
@@ -81,6 +83,32 @@ def housekeeping() -> None:
     with SessionLocal() as db:
         tracker.housekeeping(db)
     repair_untitled()
+
+
+DISCOVERY_VERSION = "2"  # bump when discover() learns new methods
+
+
+def rediscover_one_due() -> None:
+    """Re-run discovery for the one site that most needs it."""
+    from .models import AppState
+
+    with SessionLocal() as db:
+        for site in _active_sites(db):
+            key = f"discovery_v:{site.id}"
+            st = db.get(AppState, key)
+            last = db.scalar(select(func.max(JobRun.started_at)).where(JobRun.site_id == site.id, JobRun.job == "discover"))
+            stale = last is None or utcnow() - as_utc(last) > timedelta(days=7)
+            if (st is None or st.value != DISCOVERY_VERSION) or stale:
+                try:
+                    tracker.rediscover(db, _fetcher(), site)
+                except Exception as e:  # noqa: BLE001
+                    db.rollback()
+                    log.warning("rediscover %s failed: %s", site.domain, e)
+                st = db.get(AppState, key) or AppState(key=key)
+                st.value = DISCOVERY_VERSION
+                db.add(st)
+                db.commit()
+                return  # one site per run keeps the free instance responsive
 
 
 def repair_untitled() -> None:
@@ -209,6 +237,11 @@ def build_scheduler(cls: type[BaseScheduler]) -> BaseScheduler:
     sched.add_job(sweep_all, "interval", minutes=s.sitemap_sweep_minutes, id="sweep")
     sched.add_job(enrich, "interval", minutes=s.enrich_minutes, id="enrich", next_run_time=utcnow())
     sched.add_job(housekeeping, "interval", hours=24, id="housekeeping")
+    # One-off, ~1 min after start: titles for rows saved without one.
+    sched.add_job(repair_untitled, "date", run_date=utcnow() + timedelta(seconds=60), id="repair")
+    # Re-scan each site's feeds/sitemaps/listing pages: weekly, and once
+    # after an update that adds discovery methods. One site at a time.
+    sched.add_job(rediscover_one_due, "interval", minutes=10, id="rediscover", next_run_time=utcnow() + timedelta(minutes=3))
     # IST has no daylight saving, so IST clock times convert to fixed UTC ones
     # (and no time-zone database is needed, which Windows lacks).
     yh, ym = _ist_to_utc(s.youtube_scrape_hour_ist, s.youtube_scrape_minute_ist)
@@ -229,7 +262,6 @@ def _ist_to_utc(hour: int, minute: int) -> tuple[int, int]:
 def start_embedded() -> BaseScheduler:
     """Run the worker inside the API process (EMBEDDED_WORKER=true)."""
     sched = build_scheduler(BackgroundScheduler)
-    repair_untitled()
     sched.start()
     log.info("embedded worker started inside the API process")
     return sched
@@ -247,7 +279,6 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     log.info("worker started: poll every %s min, sweep every %s min", s.fast_poll_minutes, s.sitemap_sweep_minutes)
-    repair_untitled()
     sched.start()
 
 
